@@ -1,0 +1,121 @@
+name: build-pdf2htmlEX-windows-x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-win.yml'
+
+jobs:
+  win-x64:
+    name: Build Windows x64 (MXE on Ubuntu runner)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    env:
+      TGT: x86_64-w64-mingw32.static
+      MXE_DIR: ${{ github.workspace }}/mxe
+      OUT_DIR: ${{ github.workspace }}/out
+      P2H_BRANCH: v0.18.7-poppler-0.81.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install host deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential automake autoconf libtool libtool-bin pkg-config \
+            intltool gettext autopoint gperf \
+            git curl wget ca-certificates \
+            lzip p7zip-full xz-utils zip unzip \
+            python3 python3-mako ruby \
+            texinfo cmake ninja-build
+
+      - name: Prepare workspace
+        run: |
+          set -eux
+          mkdir -p "$OUT_DIR" "$MXE_DIR"
+
+      # Cache MXE build products (big speed-up on subsequent runs)
+      - name: Cache MXE
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.MXE_DIR }}/usr
+            ${{ env.MXE_DIR }}/pkg
+            ${{ env.MXE_DIR }}/tools
+          key: mxe-usr-${{ runner.os }}-v1
+
+      - name: Fetch MXE
+        run: |
+          set -eux
+          if [ ! -d "$MXE_DIR/.git" ]; then
+            git clone --depth=1 https://github.com/mxe/mxe.git "$MXE_DIR"
+          fi
+
+      - name: Build core toolchain (cc)
+        run: |
+          set -eux
+          cd "$MXE_DIR"
+          # unset any weird env that could break fetching
+          unset WGETRC || true
+          make -j1 cc MXE_TARGETS=$TGT
+
+      - name: Build libraries (one by one, low parallelism for stability)
+        run: |
+          set -eux
+          cd "$MXE_DIR"
+          # Build order matters a bit; keep it stable
+          for p in zlib libpng jpeg tiff lcms openjpeg icu4c freetype harfbuzz cairo; do
+            make -j1 "$p" MXE_TARGETS=$TGT || make -j1 "$p" MXE_TARGETS=$TGT
+          done
+
+      - name: Build poppler (compatible with 0.18.7 patch set)
+        run: |
+          set -eux
+          cd "$MXE_DIR"
+          make -j1 poppler MXE_TARGETS=$TGT || make -j1 poppler MXE_TARGETS=$TGT
+
+      - name: Build pdf2htmlEX
+        run: |
+          set -eux
+          cd "$GITHUB_WORKSPACE"
+          rm -rf pdf2htmlEX
+          git clone --depth=1 -b "$P2H_BRANCH" https://github.com/pdf2htmlEX/pdf2htmlEX.git
+          mkdir -p build && cd build
+
+          export ROOT="$MXE_DIR/usr/$TGT"
+          export PKGCONF="$MXE_DIR/usr/bin/$TGT-pkg-config"
+          export CC="$MXE_DIR/usr/bin/${TGT}-gcc"
+          export CXX="$MXE_DIR/usr/bin/${TGT}-g++"
+          export RC="$MXE_DIR/usr/bin/${TGT}-windres"
+          export STRIP="$MXE_DIR/usr/bin/${TGT}-strip"
+
+          cmake ../pdf2htmlEX \
+            -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER="$CC" \
+            -DCMAKE_CXX_COMPILER="$CXX" \
+            -DCMAKE_RC_COMPILER="$RC" \
+            -DCMAKE_FIND_ROOT_PATH="$ROOT" \
+            -DPKG_CONFIG_EXECUTABLE="$PKGCONF" \
+            -DENABLE_SVG=ON
+
+          make -j2
+          "$STRIP" src/pdf2htmlEX.exe || true
+
+          mkdir -p "$OUT_DIR"
+          cp -a src/pdf2htmlEX.exe "$OUT_DIR/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf2htmlEX-x64
+          path: ${{ env.OUT_DIR }}/pdf2htmlEX.exe
+          if-no-files-found: error
