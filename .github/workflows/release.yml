@@ -1,0 +1,24 @@
+name: release-pdf2htmlEX
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-and-release:
+    uses: ./.github/workflows/build-win.yml
+
+  attach:
+    needs: build-and-release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdf2htmlEX-x64
+          path: out
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/pdf2htmlEX.exe
