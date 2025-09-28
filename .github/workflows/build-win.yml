@@ -1,99 +1,95 @@
+name: build-win
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-win-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TGT: x86_64-w64-mingw32.static
+  MXE_DIR: ${{ github.workspace }}/mxe
+  OUT_DIR: ${{ github.workspace }}/out
+  P2H_BRANCH: v0.18.7-poppler-0.81.0
+
 jobs:
   build-win:
-    name: build-win
-    runs-on: windows-latest
-
-    defaults:
-      run:
-        shell: msys2 {0}
-
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Set up MSYS2 with MINGW64 toolchain
-        uses: msys2/setup-msys2@v2
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential automake autoconf libtool libtool-bin pkg-config \
+            intltool gettext autopoint gperf \
+            git curl wget ca-certificates \
+            lzip p7zip-full xz-utils zip unzip \
+            python3 python3-mako ruby \
+            texinfo cmake ninja-build
+
+      - name: Prep dirs
+        run: |
+          set -eux
+          mkdir -p "$OUT_DIR" "$MXE_DIR"
+
+      - name: Cache MXE (usr/pkg/tools)
+        uses: actions/cache@v4
         with:
-          release: true
-          msystem: MINGW64
-          update: true
-          install: >-
-            base-devel
-            git
-            curl
-            wget
-            zip
-            unzip
-            p7zip
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-poppler
-            mingw-w64-x86_64-poppler-data
-            mingw-w64-x86_64-cairo
-            mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-harfbuzz
-            mingw-w64-x86_64-fontconfig
-            mingw-w64-x86_64-libpng
-            mingw-w64-x86_64-libjpeg-turbo
-            mingw-w64-x86_64-libtiff
-            mingw-w64-x86_64-openjpeg2
-            mingw-w64-x86_64-icu
-            mingw-w64-x86_64-fontforge
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-brotli
-            mingw-w64-x86_64-zstd
-            mingw-w64-x86_64-expat
-            mingw-w64-x86_64-pcre2
+          path: |
+            ${{ env.MXE_DIR }}/usr
+            ${{ env.MXE_DIR }}/pkg
+            ${{ env.MXE_DIR }}/tools
+          key: mxe-usr-${{ runner.os }}-v1
 
-      - name: Show tool versions
+      - name: Fetch MXE
         run: |
-          gcc --version
-          cmake --version
-          ninja --version
-          pkgconf --version
-          fontforge -version || true
-
-      - name: Configure
-        working-directory: ${{ github.workspace }}
-        env:
-          PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
-          CC: x86_64-w64-mingw32-gcc
-          CXX: x86_64-w64-mingw32-g++
-        run: |
-          rm -rf build && mkdir -p build
-          cd build
-          cmake -G Ninja .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/mingw64 \
-            -DBUILD_SHARED_LIBS=OFF
-
-      - name: Build
-        working-directory: ${{ github.workspace }}/build
-        run: |
-          ninja -v
-
-      - name: Package (zip)
-        working-directory: ${{ github.workspace }}
-        run: |
-          mkdir -p out
-          # adjust the binary name/path if your project outputs somewhere else
-          if [ -f build/pdf2htmlEX.exe ]; then
-            cp build/pdf2htmlEX.exe out/
-          else
-            # common alternative output path
-            find build -maxdepth 2 -name "pdf2htmlEX*.exe" -print -exec cp {} out/ \;
+          set -eux
+          if [ ! -d "$MXE_DIR/.git" ]; then
+            git clone --depth=1 https://github.com/mxe/mxe.git "$MXE_DIR"
           fi
-          # bundle needed DLLs (static preferred; if shared slipped in, grab runtime dlls)
-          # you can uncomment next line to auto-copy runtime deps if needed:
-          # ntldd -R out/pdf2htmlEX.exe | awk '/mingw64/ {print $3}' | xargs -I{} cp -u {} out/
-          7z a -tzip out/pdf2htmlEX-win.zip out/*
 
-      - name: Upload artifact
+      - name: Build MXE toolchain (cc)
+        run: |
+          set -eux
+          cd "$MXE_DIR"
+          unset WGETRC || true
+          make -j1 cc MXE_TARGETS=$TGT
+
+      - name: Build libraries needed by pdf2htmlEX
+        run: |
+          set -eux
+          cd "$MXE_DIR"
+          for p in zlib libpng jpeg tiff lcms openjpeg icu4c freetype harfbuzz cairo; do
+            make -j1 "$p" MXE_TARGETS=$TGT || make -j1 "$p" MXE_TARGETS=$TGT
+          done
+          # Attempt fontforge only if MXE provides a rule; don't fail if missing
+          ( make -j1 fontforge MXE_TARGETS=$TGT ) || echo "Skipping fontforge: no MXE rule."
+
+      # TODO: add your actual pdf2htmlEX build + packaging here, writing into $OUT_DIR
+      - name: Pack artifacts (placeholder)
+        run: |
+          set -eux
+          echo "Put your packaging steps here and place outputs under $OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          echo "build stamp $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT_DIR/BUILD-INFO.txt"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pdf2htmlEX-win
-          path: out/pdf2htmlEX-win.zip
+          name: win-build
+          path: ${{ env.OUT_DIR }}
+          if-no-files-found: error
