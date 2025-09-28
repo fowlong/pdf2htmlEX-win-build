@@ -1,9 +1,24 @@
+name: build-win
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Needed for the release step
+permissions:
+  contents: write
+
+concurrency:
+  group: build-win-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-win:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout (workspace only)
+      - name: Checkout (this repo)
         uses: actions/checkout@v4
 
       - name: Set up MSYS2 (MINGW64)
@@ -14,6 +29,7 @@ jobs:
           install: >-
             base-devel
             git
+            ntldd
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
@@ -64,15 +80,15 @@ jobs:
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/out"
           mkdir -p "$OUT/bin"
-          # pick exe from build tree (not from /mingw64/bin)
+          # take the exe from the build tree
           cp -v "$GITHUB_WORKSPACE/src/build/src/pdf2htmlEX.exe" "$OUT/bin/"
 
-          # useful Poppler tools (optional)
+          # optional poppler helpers
           cp -v /mingw64/bin/pdfinfo.exe    "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftocairo.exe "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftoppm.exe   "$OUT/bin/" || true
 
-          # Poppler data
+          # poppler data
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p "$OUT/share"
             cp -a /mingw64/share/poppler "$OUT/share/"
@@ -82,13 +98,11 @@ jobs:
           copy_deps () { ntldd -R "$1" | awk '/mingw64\/bin/ {print $3}' | xargs -r -I{} cp -u "{}" "$OUT/bin/"; }
           copy_deps "$OUT/bin/pdf2htmlEX.exe"
           for e in "$OUT/bin/"pdf{info,tocairo,toppm}.exe; do [ -f "$e" ] && copy_deps "$e"; done
-
-          # basic runtimes
           for dll in /mingw64/bin/libstdc++-6.dll /mingw64/bin/libgcc_s_seh-1.dll /mingw64/bin/libwinpthread-1.dll; do
             [ -f "$dll" ] && cp -u "$dll" "$OUT/bin/" || true
           done
 
-          # verify
+          # verify exe exists
           [ -x "$OUT/bin/pdf2htmlEX.exe" ] || (echo "::error ::pdf2htmlEX.exe missing after build" && exit 1)
 
           # BUILD-INFO
@@ -111,17 +125,14 @@ jobs:
           name: pdf2htmlEX-win64
           path: pdf2htmlEX-win64-*.zip
 
-      # Optional: auto-release
-      - name: Release
-        if: ${{ always() && !cancelled() }}
+      - name: Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           prerelease: true
           files: pdf2htmlEX-win64-*.zip
 
-      # If something goes wrong, ship logs
-      - name: Upload CMake/Ninja logs on failure
+      - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
