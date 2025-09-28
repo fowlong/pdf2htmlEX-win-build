@@ -1,56 +1,14 @@
-name: release
+- name: Create GitHub Release
+  uses: softprops/action-gh-release@v2
+  if: github.ref == 'refs/heads/main'
+  with:
+    tag_name: v${{ github.run_number }}
+    name: pdf2htmlEX Windows build ${{ github.run_number }}
+    draft: false
+    prerelease: true
 
-on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  TGT: x86_64-w64-mingw32.static
-  MXE_DIR: ${{ github.workspace }}/mxe
-  OUT_DIR: ${{ github.workspace }}/out
-  P2H_BRANCH: v0.18.7-poppler-0.81.0
-
-jobs:
-  build:
-    uses: ./.github/workflows/build-win.yml
-    secrets: inherit
-    # If you don’t want to make build-win reusable, comment this "uses" job
-    # and copy the build steps from build-win.yml here.
-    # For "uses" to work, build-win.yml must include:
-    #   on: [workflow_call, workflow_dispatch, push]
-    # If you prefer not to add workflow_call, see the inline fallback below.
-
-  # Fallback — uncomment this if you're NOT making build-win.yml reusable:
-  # build-inline:
-  #   runs-on: ubuntu-22.04
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #     ... (copy the same steps from build-win.yml) ...
-
-  release:
-    needs: [build]
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: win-build
-          path: out
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            out/**/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- name: Upload asset to Release
+  uses: softprops/action-gh-release@v2
+  if: github.ref == 'refs/heads/main'
+  with:
+    files: pdf2htmlEX-win64.zip
