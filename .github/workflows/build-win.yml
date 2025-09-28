@@ -33,7 +33,7 @@ jobs:
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
-            # NOTE: do NOT install MSYS2 poppler to avoid conflicts with vendored poppler
+            # intentionally NOT installing mingw-w64-x86_64-poppler (to avoid header/API clashes)
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-harfbuzz
@@ -45,7 +45,8 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euxo pipefail
-          PDF2HTMLEX_REPO=https://github.com/coolwanglu/pdf2htmlEX.git
+          # Use the community fork that keeps the 0.18.x line alive.
+          PDF2HTMLEX_REPO=https://github.com/pdf2htmlEX/pdf2htmlEX.git
           PDF2HTMLEX_REF=0.18.7
           git clone --depth 1 --branch "$PDF2HTMLEX_REF" --recurse-submodules "$PDF2HTMLEX_REPO" src
           ( cd src && git submodule update --init --recursive )
@@ -80,21 +81,22 @@ jobs:
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/out"
           mkdir -p "$OUT/bin"
+
           # take the exe from the build tree
           cp -v "$GITHUB_WORKSPACE/src/build/src/pdf2htmlEX.exe" "$OUT/bin/"
 
-          # optional poppler helpers (will only copy if present)
+          # optional poppler helpers (will copy only if present; we didn't install poppler)
           cp -v /mingw64/bin/pdfinfo.exe    "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftocairo.exe "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftoppm.exe   "$OUT/bin/" || true
 
-          # poppler data (if the system package exists; safe to skip)
+          # poppler share data (if a system package provided it; safe to skip)
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p "$OUT/share"
             cp -a /mingw64/share/poppler "$OUT/share/"
           fi
 
-          # dependencies
+          # pull dependent DLLs alongside the EXE
           copy_deps () { /mingw64/bin/ntldd.exe -R "$1" | awk '/mingw64\/bin/ {print $3}' | xargs -r -I{} cp -u "{}" "$OUT/bin/"; }
           copy_deps "$OUT/bin/pdf2htmlEX.exe"
           for e in "$OUT/bin/"pdf{info,tocairo,toppm}.exe; do [ -f "$e" ] && copy_deps "$e"; done
