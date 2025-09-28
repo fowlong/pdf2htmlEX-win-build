@@ -1,31 +1,27 @@
-name: build-pdf2htmlEX-windows-x64
+name: Build Windows x64 (MXE on Ubuntu runner)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - '.github/workflows/build-win.yml'
+
+permissions:
+  contents: read
+
+env:
+  TGT: x86_64-w64-mingw32.static
+  MXE_DIR: ${{ github.workspace }}/mxe
+  OUT_DIR: ${{ github.workspace }}/out
+  P2H_BRANCH: v0.18.7-poppler-0.81.0
 
 jobs:
-  win-x64:
-    name: Build Windows x64 (MXE on Ubuntu runner)
+  build-win:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
-
-    env:
-      TGT: x86_64-w64-mingw32.static
-      MXE_DIR: ${{ github.workspace }}/mxe
-      OUT_DIR: ${{ github.workspace }}/out
-      P2H_BRANCH: v0.18.7-poppler-0.81.0
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Install host deps
+      - name: Install build prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -36,12 +32,13 @@ jobs:
             python3 python3-mako ruby \
             texinfo cmake ninja-build
 
-      - name: Prepare workspace
+      # Prepare workspace folders
+      - name: Prepare directories
         run: |
           set -eux
           mkdir -p "$OUT_DIR" "$MXE_DIR"
 
-      # Cache MXE build products (big speed-up on subsequent runs)
+      # MXE cache to speed up subsequent runs
       - name: Cache MXE
         uses: actions/cache@v4
         with:
@@ -49,9 +46,9 @@ jobs:
             ${{ env.MXE_DIR }}/usr
             ${{ env.MXE_DIR }}/pkg
             ${{ env.MXE_DIR }}/tools
-          key: mxe-usr-${{ runner.os }}-v1
+          key: mxe-usr-Linux-v1
 
-      - name: Fetch MXE
+      - name: Clone MXE
         run: |
           set -eux
           if [ ! -d "$MXE_DIR/.git" ]; then
@@ -62,33 +59,38 @@ jobs:
         run: |
           set -eux
           cd "$MXE_DIR"
-          # unset any weird env that could break fetching
           unset WGETRC || true
           make -j1 cc MXE_TARGETS=$TGT
 
-      - name: Build libraries (one by one, low parallelism for stability)
+      - name: Build libraries (one by one, low parallelism for RAM)
         run: |
           set -eux
           cd "$MXE_DIR"
-          # Build order matters a bit; keep it stable
           for p in zlib libpng jpeg tiff lcms openjpeg icu4c freetype harfbuzz cairo; do
             make -j1 "$p" MXE_TARGETS=$TGT || make -j1 "$p" MXE_TARGETS=$TGT
           done
+          # >>> NEW: required for pdf2htmlEX (provides libfontforge + .pc file)
+          make -j1 fontforge MXE_TARGETS=$TGT
 
-      - name: Build poppler (compatible with 0.18.7 patch set)
+      - name: Build poppler (compatible enough for our branch)
         run: |
           set -eux
           cd "$MXE_DIR"
           make -j1 poppler MXE_TARGETS=$TGT || make -j1 poppler MXE_TARGETS=$TGT
 
-      - name: Build pdf2htmlEX
+      - name: Fetch pdf2htmlEX source
         run: |
           set -eux
           cd "$GITHUB_WORKSPACE"
           rm -rf pdf2htmlEX
           git clone --depth=1 -b "$P2H_BRANCH" https://github.com/pdf2htmlEX/pdf2htmlEX.git
-          mkdir -p build && cd build
+          mkdir -p build
 
+      # If we later hit poppler API compile errors, we can insert a patch step HERE.
+
+      - name: Build pdf2htmlEX
+        run: |
+          set -eux
           export ROOT="$MXE_DIR/usr/$TGT"
           export PKGCONF="$MXE_DIR/usr/bin/$TGT-pkg-config"
           export CC="$MXE_DIR/usr/bin/${TGT}-gcc"
@@ -96,7 +98,8 @@ jobs:
           export RC="$MXE_DIR/usr/bin/${TGT}-windres"
           export STRIP="$MXE_DIR/usr/bin/${TGT}-strip"
 
-          cmake ../pdf2htmlEX \
+          cd "$GITHUB_WORKSPACE/build"
+          "$MXE_DIR/usr/bin/cmake" ../pdf2htmlEX \
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_SYSTEM_NAME=Windows \
@@ -109,13 +112,12 @@ jobs:
 
           make -j2
           "$STRIP" src/pdf2htmlEX.exe || true
-
           mkdir -p "$OUT_DIR"
           cp -a src/pdf2htmlEX.exe "$OUT_DIR/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pdf2htmlEX-x64
+          name: pdf2htmlEX-windows-x64
           path: ${{ env.OUT_DIR }}/pdf2htmlEX.exe
           if-no-files-found: error
