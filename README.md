@@ -1,0 +1,1 @@
+[![Build Windows x64 (MXE on Ubuntu runner)](https://github.com/fowlong/pdf2htmlEX-win-build/actions/workflows/build-win.yml/badge.svg)](https://github.com/fowlong/pdf2htmlEX-win-build/actions/workflows/build-win.yml)
