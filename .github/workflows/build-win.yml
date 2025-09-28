@@ -33,7 +33,7 @@ jobs:
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-poppler
+            # NOTE: do NOT install MSYS2 poppler to avoid conflicts with vendored poppler
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-harfbuzz
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euxo pipefail
           PDF2HTMLEX_REPO=https://github.com/coolwanglu/pdf2htmlEX.git
-          PDF2HTMLEX_REF=0.18.7-poppler-0.81.0
+          PDF2HTMLEX_REF=0.18.7
           git clone --depth 1 --branch "$PDF2HTMLEX_REF" --recurse-submodules "$PDF2HTMLEX_REPO" src
           ( cd src && git submodule update --init --recursive )
           test -f src/CMakeLists.txt
@@ -83,12 +83,12 @@ jobs:
           # take the exe from the build tree
           cp -v "$GITHUB_WORKSPACE/src/build/src/pdf2htmlEX.exe" "$OUT/bin/"
 
-          # optional poppler helpers
+          # optional poppler helpers (will only copy if present)
           cp -v /mingw64/bin/pdfinfo.exe    "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftocairo.exe "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftoppm.exe   "$OUT/bin/" || true
 
-          # poppler data
+          # poppler data (if the system package exists; safe to skip)
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p "$OUT/share"
             cp -a /mingw64/share/poppler "$OUT/share/"
