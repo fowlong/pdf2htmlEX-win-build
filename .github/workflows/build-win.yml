@@ -5,7 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# Needed for the release step
 permissions:
   contents: write
 
@@ -29,11 +28,10 @@ jobs:
           install: >-
             base-devel
             git
-            mingw-w64-x86_64-ntldd
+            ntldd
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
-            # intentionally NOT installing mingw-w64-x86_64-poppler (to avoid header/API clashes)
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-harfbuzz
@@ -45,7 +43,7 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euxo pipefail
-          # Use the community fork that keeps the 0.18.x line alive.
+          # Use an actively maintained mirror of the 0.18.x line
           PDF2HTMLEX_REPO=https://github.com/pdf2htmlEX/pdf2htmlEX.git
           PDF2HTMLEX_REF=0.18.7
           git clone --depth 1 --branch "$PDF2HTMLEX_REF" --recurse-submodules "$PDF2HTMLEX_REPO" src
@@ -82,29 +80,33 @@ jobs:
           OUT="$GITHUB_WORKSPACE/out"
           mkdir -p "$OUT/bin"
 
-          # take the exe from the build tree
+          # main binary
           cp -v "$GITHUB_WORKSPACE/src/build/src/pdf2htmlEX.exe" "$OUT/bin/"
 
-          # optional poppler helpers (will copy only if present; we didn't install poppler)
+          # optional helpers (if present)
           cp -v /mingw64/bin/pdfinfo.exe    "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftocairo.exe "$OUT/bin/" || true
           cp -v /mingw64/bin/pdftoppm.exe   "$OUT/bin/" || true
 
-          # poppler share data (if a system package provided it; safe to skip)
+          # poppler shared data (if present)
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p "$OUT/share"
             cp -a /mingw64/share/poppler "$OUT/share/"
           fi
 
-          # pull dependent DLLs alongside the EXE
-          copy_deps () { /mingw64/bin/ntldd.exe -R "$1" | awk '/mingw64\/bin/ {print $3}' | xargs -r -I{} cp -u "{}" "$OUT/bin/"; }
+          # find ntldd reliably
+          NTLDD_BIN="$(command -v ntldd || true)"
+          [ -z "$NTLDD_BIN" ] && NTLDD_BIN="/usr/bin/ntldd"
+
+          # copy DLL deps
+          copy_deps () { "$NTLDD_BIN" -R "$1" | awk '/mingw64\/bin/ {print $3}' | xargs -r -I{} cp -u "{}" "$OUT/bin/"; }
           copy_deps "$OUT/bin/pdf2htmlEX.exe"
           for e in "$OUT/bin/"pdf{info,tocairo,toppm}.exe; do [ -f "$e" ] && copy_deps "$e"; done
           for dll in /mingw64/bin/libstdc++-6.dll /mingw64/bin/libgcc_s_seh-1.dll /mingw64/bin/libwinpthread-1.dll; do
             [ -f "$dll" ] && cp -u "$dll" "$OUT/bin/" || true
           done
 
-          # verify exe exists
+          # verify
           [ -x "$OUT/bin/pdf2htmlEX.exe" ] || (echo "::error ::pdf2htmlEX.exe missing after build" && exit 1)
 
           # BUILD-INFO
