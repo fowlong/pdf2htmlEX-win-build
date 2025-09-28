@@ -1,19 +1,12 @@
-name: build-win
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
 jobs:
   build-win:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout (just to have a workspace)
+      - name: Checkout (workspace only)
         uses: actions/checkout@v4
 
-      - name: Set up MSYS2
+      - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -32,18 +25,18 @@ jobs:
             mingw-w64-x86_64-zlib
             mingw-w64-x86_64-fontforge
 
-      # === BUILD pdf2htmlEX (actual sources) ===
-      - name: Fetch pdf2htmlEX sources
+      - name: Fetch pdf2htmlEX (with submodules)
         shell: msys2 {0}
         run: |
           set -euxo pipefail
           PDF2HTMLEX_REPO=https://github.com/coolwanglu/pdf2htmlEX.git
           PDF2HTMLEX_REF=0.18.7-poppler-0.81.0
-          git clone --depth 1 --branch "$PDF2HTMLEX_REF" "$PDF2HTMLEX_REPO" src
+          git clone --depth 1 --branch "$PDF2HTMLEX_REF" --recurse-submodules "$PDF2HTMLEX_REPO" src
+          ( cd src && git submodule update --init --recursive )
           test -f src/CMakeLists.txt
-          grep -i pdf2htmlEX src/CMakeLists.txt || true
+          test -f src/3rdparty/poppler/git/CairoOutputDev.cc
 
-      - name: Configure & build
+      - name: Configure (CMake)
         shell: msys2 {0}
         working-directory: src
         run: |
@@ -51,60 +44,52 @@ jobs:
           rm -rf build && mkdir build && cd build
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/mingw64 \
             -DCMAKE_CXX_STANDARD=14 \
             -DENABLE_SVG=ON \
             ..
-          ninja -v
-          ninja install
-          ls -l /mingw64/bin | sed -n '1,200p'
+          cmake --build . --target help | sed -n '1,200p'
 
-      - name: Verify pdf2htmlEX presence
+      - name: Build pdf2htmlEX target
         shell: msys2 {0}
+        working-directory: src/build
         run: |
           set -euxo pipefail
-          if [ ! -x /mingw64/bin/pdf2htmlEX.exe ]; then
-            echo "::error title=pdf2htmlEX.exe missing::Build did not produce /mingw64/bin/pdf2htmlEX.exe"
-            exit 1
-          fi
-          /mingw64/bin/pdf2htmlEX.exe --help >/dev/null 2>&1 || true
+          ninja -v pdf2htmlEX
+          ls -l src || true
+          ls -l src/pdf2htmlEX.exe
 
-      # === PACKAGE (portable) ===
-      - name: Assemble portable folder
+      - name: Package portable bundle
         shell: msys2 {0}
         run: |
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/out"
           mkdir -p "$OUT/bin"
-          cp -v /mingw64/bin/pdf2htmlEX.exe "$OUT/bin/"
-          cp -v /mingw64/bin/pdfinfo.exe     "$OUT/bin/"
-          cp -v /mingw64/bin/pdftocairo.exe  "$OUT/bin/"
-          cp -v /mingw64/bin/pdftoppm.exe    "$OUT/bin/"
+          # pick exe from build tree (not from /mingw64/bin)
+          cp -v "$GITHUB_WORKSPACE/src/build/src/pdf2htmlEX.exe" "$OUT/bin/"
 
-          # data files
+          # useful Poppler tools (optional)
+          cp -v /mingw64/bin/pdfinfo.exe    "$OUT/bin/" || true
+          cp -v /mingw64/bin/pdftocairo.exe "$OUT/bin/" || true
+          cp -v /mingw64/bin/pdftoppm.exe   "$OUT/bin/" || true
+
+          # Poppler data
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p "$OUT/share"
             cp -a /mingw64/share/poppler "$OUT/share/"
           fi
 
-          # collect DLLs
-          copy_deps () {
-            ntldd -R "$1" | awk '/mingw64\/bin/ {print $3}' | while read -r dll; do
-              [ -f "$dll" ] && cp -u "$dll" "$OUT/bin/"
-            done
-          }
-          for exe in "$OUT/bin/"*.exe; do copy_deps "$exe"; done
+          # dependencies
+          copy_deps () { ntldd -R "$1" | awk '/mingw64\/bin/ {print $3}' | xargs -r -I{} cp -u "{}" "$OUT/bin/"; }
+          copy_deps "$OUT/bin/pdf2htmlEX.exe"
+          for e in "$OUT/bin/"pdf{info,tocairo,toppm}.exe; do [ -f "$e" ] && copy_deps "$e"; done
 
-          # common runtime DLLs (best effort)
-          for dll in \
-            /mingw64/bin/libstdc++-6.dll \
-            /mingw64/bin/libgcc_s_seh-1.dll \
-            /mingw64/bin/libwinpthread-1.dll ; do
+          # basic runtimes
+          for dll in /mingw64/bin/libstdc++-6.dll /mingw64/bin/libgcc_s_seh-1.dll /mingw64/bin/libwinpthread-1.dll; do
             [ -f "$dll" ] && cp -u "$dll" "$OUT/bin/" || true
           done
 
-          # guard again
-          [ -x "$OUT/bin/pdf2htmlEX.exe" ] || (echo "::error pdf2htmlEX missing after packaging" && exit 1)
+          # verify
+          [ -x "$OUT/bin/pdf2htmlEX.exe" ] || (echo "::error ::pdf2htmlEX.exe missing after build" && exit 1)
 
           # BUILD-INFO
           cat > "$OUT/BUILD-INFO" <<EOF
@@ -126,12 +111,22 @@ jobs:
           name: pdf2htmlEX-win64
           path: pdf2htmlEX-win64-*.zip
 
+      # Optional: auto-release
       - name: Release
+        if: ${{ always() && !cancelled() }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           prerelease: true
           files: pdf2htmlEX-win64-*.zip
-          body: |
-            Automated Windows build for commit ${{ github.sha }}.
-            The attached ZIP contains a BUILD-INFO file with component versions.
+
+      # If something goes wrong, ship logs
+      - name: Upload CMake/Ninja logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            src/build/CMakeFiles
+            src/build/*.ninja
+            src/build/**/*.log
