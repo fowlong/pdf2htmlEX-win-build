@@ -1,24 +1,152 @@
-name: release-pdf2htmlEX
+name: release
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed for creating/updating GitHub Releases
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-and-release:
-    uses: ./.github/workflows/build-win.yml
+  build-win:
+    name: Build Windows (MSYS2)
+    runs-on: windows-latest
 
-  attach:
-    needs: build-and-release
-    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    env:
+      # CCache directory shared via Actions cache
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_COMPRESSLEVEL: "5"
+      CCACHE_MAXSIZE: "750M"
+      # Prefer static where possible; tweak if you intentionally want shared
+      PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
+      CC: x86_64-w64-mingw32-gcc
+      CXX: x86_64-w64-mingw32-g++
+      CMAKE_GENERATOR: Ninja
+
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          name: pdf2htmlEX-x64
-          path: out
+          fetch-depth: 1
 
-      - name: Create GitHub Release
+      # Cache MSYS2/pacman packages between runs (built into the setup action)
+      - name: Set up MSYS2 (MINGW64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true      # set to false once caches are warm if you want to shave a few seconds
+          release: true
+          cache: true       # <-- speeds up package installs
+          install: >-
+            base-devel
+            git
+            curl
+            wget
+            zip
+            unzip
+            p7zip
+            ntldd
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-poppler
+            mingw-w64-x86_64-poppler-data
+            mingw-w64-x86_64-cairo
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-fontconfig
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-libtiff
+            mingw-w64-x86_64-openjpeg2
+            mingw-w64-x86_64-icu
+            mingw-w64-x86_64-fontforge
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-brotli
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-expat
+            mingw-w64-x86_64-pcre2
+
+      # Cache the ccache directory
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('**/*.[chCH]', '**/*.[ch]pp', '**/*.cc', '**/*.cxx', 'CMakeLists.txt', '**/*.cmake') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-
+
+      - name: Tool versions
+        run: |
+          gcc --version
+          cmake --version
+          ninja --version
+          pkgconf --version
+          ccache --version
+          fontforge -version || true
+
+      - name: Configure
+        run: |
+          rm -rf build && mkdir -p build
+          cd build
+          cmake -G "${CMAKE_GENERATOR}" .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DBUILD_SHARED_LIBS=OFF
+          ccache -s
+
+      - name: Build
+        working-directory: build
+        run: |
+          ninja -v
+          ccache -s
+
+      - name: Package (zip)
+        run: |
+          mkdir -p out
+          # copy the exe (adjust if your cmake target outputs elsewhere)
+          if [ -f build/pdf2htmlEX.exe ]; then
+            cp build/pdf2htmlEX.exe out/
+          else
+            find build -maxdepth 3 -name "pdf2htmlEX*.exe" -print -exec cp {} out/ \;
+          fi
+
+          # If anything linked dynamically slipped in, copy deps (no-op for pure static)
+          if [ -f out/pdf2htmlEX.exe ]; then
+            ntldd -R out/pdf2htmlEX.exe | awk '/mingw64/ {print $3}' | xargs -r -I{} cp -u {} out/
+          fi
+
+          7z a -tzip out/pdf2htmlEX-win.zip out/*
+
+      - name: Upload run artifact (fast)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf2htmlEX-win
+          path: out/pdf2htmlEX-win.zip
+          compression-level: 0  # speed over size
+
+      - name: Create/Update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: out/pdf2htmlEX.exe
+          files: out/pdf2htmlEX-win.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
