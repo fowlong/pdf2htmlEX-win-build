@@ -10,10 +10,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout (just to have a workspace)
         uses: actions/checkout@v4
 
-      # MSYS2 toolchain & deps
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -31,92 +30,84 @@ jobs:
             mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-libpng
             mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-fontforge   # pdf2htmlEX needs libfontforge
+            mingw-w64-x86_64-fontforge
 
-      # ----- BUILD pdf2htmlEX -----
+      # === BUILD pdf2htmlEX (actual sources) ===
       - name: Fetch pdf2htmlEX sources
         shell: msys2 {0}
         run: |
           set -euxo pipefail
-          # use your fork / branch; change URL if needed
-          git clone --depth=1 https://github.com/fowlong/pdf2htmlEX-win-build tmp-src
-          # if the repo only hosts workflow scaffolding, replace with real pdf2htmlEX repo:
-          # git clone --depth=1 https://github.com/coolwanglu/pdf2htmlEX tmp-src
-          # or your patched fork/branch that builds against Poppler 0.81:
-          # git -C tmp-src fetch origin <branch> && git -C tmp-src checkout <branch>
-          ls -la tmp-src || true
+          PDF2HTMLEX_REPO=https://github.com/coolwanglu/pdf2htmlEX.git
+          PDF2HTMLEX_REF=0.18.7-poppler-0.81.0
+          git clone --depth 1 --branch "$PDF2HTMLEX_REF" "$PDF2HTMLEX_REPO" src
+          test -f src/CMakeLists.txt
+          grep -i pdf2htmlEX src/CMakeLists.txt || true
 
       - name: Configure & build
         shell: msys2 {0}
-        working-directory: tmp-src
+        working-directory: src
         run: |
           set -euxo pipefail
           rm -rf build && mkdir build && cd build
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DCMAKE_CXX_STANDARD=14 \
             -DENABLE_SVG=ON \
             ..
           ninja -v
           ninja install
+          ls -l /mingw64/bin | sed -n '1,200p'
 
-      # Quick sanity: the EXE must exist and run
       - name: Verify pdf2htmlEX presence
         shell: msys2 {0}
         run: |
           set -euxo pipefail
-          test -x /mingw64/bin/pdf2htmlEX.exe
-          /mingw64/bin/pdf2htmlEX.exe --version || true
+          if [ ! -x /mingw64/bin/pdf2htmlEX.exe ]; then
+            echo "::error title=pdf2htmlEX.exe missing::Build did not produce /mingw64/bin/pdf2htmlEX.exe"
+            exit 1
+          fi
+          /mingw64/bin/pdf2htmlEX.exe --help >/dev/null 2>&1 || true
 
-      # ----- VERIFY & PACKAGE -----
+      # === PACKAGE (portable) ===
       - name: Assemble portable folder
         shell: msys2 {0}
         run: |
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/out"
           mkdir -p "$OUT/bin"
+          cp -v /mingw64/bin/pdf2htmlEX.exe "$OUT/bin/"
+          cp -v /mingw64/bin/pdfinfo.exe     "$OUT/bin/"
+          cp -v /mingw64/bin/pdftocairo.exe  "$OUT/bin/"
+          cp -v /mingw64/bin/pdftoppm.exe    "$OUT/bin/"
 
-          # Must-have binaries
-          cp /mingw64/bin/pdf2htmlEX.exe "$OUT/bin/"
-          cp /mingw64/bin/pdfinfo.exe     "$OUT/bin/"
-          cp /mingw64/bin/pdftocairo.exe  "$OUT/bin/"
-          cp /mingw64/bin/pdftoppm.exe    "$OUT/bin/"
-
-          # Copy Poppler data dir (cmaps etc.)
+          # data files
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p "$OUT/share"
             cp -a /mingw64/share/poppler "$OUT/share/"
           fi
 
-          # Collect dependent DLLs with ntldd
+          # collect DLLs
           copy_deps () {
             ntldd -R "$1" | awk '/mingw64\/bin/ {print $3}' | while read -r dll; do
               [ -f "$dll" ] && cp -u "$dll" "$OUT/bin/"
             done
           }
-          for exe in "$OUT/bin"/pdf2htmlEX.exe "$OUT/bin"/pdfinfo.exe "$OUT/bin"/pdftocairo.exe "$OUT/bin"/pdftoppm.exe; do
-            copy_deps "$exe"
-          done
+          for exe in "$OUT/bin/"*.exe; do copy_deps "$exe"; done
 
-          # Defensive extras (best-effort)
+          # common runtime DLLs (best effort)
           for dll in \
             /mingw64/bin/libstdc++-6.dll \
             /mingw64/bin/libgcc_s_seh-1.dll \
-            /mingw64/bin/libwinpthread-1.dll \
-            /mingw64/bin/zlib1.dll \
-            /mingw64/bin/libbrotlicommon*.dll \
-            /mingw64/bin/libbrotlidec*.dll \
-            /mingw64/bin/libbz2-*.dll \
-            /mingw64/bin/libopenjp2-*.dll ; do
+            /mingw64/bin/libwinpthread-1.dll ; do
             [ -f "$dll" ] && cp -u "$dll" "$OUT/bin/" || true
           done
 
-          # Required: fail if pdf2htmlEX is still missing
-          test -x "$OUT/bin/pdf2htmlEX.exe"
+          # guard again
+          [ -x "$OUT/bin/pdf2htmlEX.exe" ] || (echo "::error pdf2htmlEX missing after packaging" && exit 1)
 
           # BUILD-INFO
           cat > "$OUT/BUILD-INFO" <<EOF
-          repo=$(git -C "$GITHUB_WORKSPACE" remote get-url origin 2>/dev/null || echo local)
           run=${{ github.run_number }}
           commit=${{ github.sha }}
           date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -127,7 +118,6 @@ jobs:
           harfbuzz=$(pkg-config --modversion harfbuzz || true)
           EOF
 
-          # Zip
           7z a -bd -tzip "$GITHUB_WORKSPACE/pdf2htmlEX-win64-${{ github.run_number }}.zip" "$OUT"/*
 
       - name: Upload artifact
@@ -136,9 +126,7 @@ jobs:
           name: pdf2htmlEX-win64
           path: pdf2htmlEX-win64-*.zip
 
-      # Optional GitHub Release
       - name: Release
-        if: startsWith(github.ref, 'refs/heads/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
