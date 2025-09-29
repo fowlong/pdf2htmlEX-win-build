@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  build-win64:
     runs-on: windows-latest
 
     steps:
@@ -54,7 +54,7 @@ jobs:
           find "$SRCDIR" -name CMakeLists.txt -print \
             -exec sed -i -E 's/cmake_minimum_required\s*\(\s*VERSION\s*[0-9.]+\)/cmake_minimum_required(VERSION 3.5)/g' {} +
 
-      # ---------------- PLAN A: system Poppler via pkg-config ----------------
+      # --------------------------- PLAN A: system Poppler ---------------------------
       - name: Configure (Plan A)
         shell: msys2 {0}
         env:
@@ -75,23 +75,37 @@ jobs:
           echo "== Poppler shims =="
           mkdir -p "$ROOTDIR/poppler/build/glib" "$ROOTDIR/poppler/build"
           [ -f /mingw64/lib/libpoppler-glib.dll.a ] && \
-            cp -u /mingw64/lib/libpoppler-glib.dll.a "$ROOTDIR/poppler/build/glib/libpoppler-glib.a"
+            cp -u /mingw64/lib/libpoppler-glib.dll.a "$ROOTDIR/poppler/build/glib/libpoppler-glib.a" || true
           [ -f /mingw64/lib/libpoppler.dll.a ] && \
-            cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a"
+            cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a" || true
 
-          echo "== FontForge shims (glob versioned import libs) =="
+          echo "== FontForge shims (no ls, glob-safe) =="
           mkdir -p "$ROOTDIR/fontforge/build/lib"
-          # libfontforge*.dll.a  -> libfontforge.a
-          FF=$(ls /mingw64/lib/libfontforge*.dll.a 2>/dev/null | head -n1)
-          if [ -n "$FF" ]; then cp -u "$FF" "$ROOTDIR/fontforge/build/lib/libfontforge.a"; fi
-          # libgdraw*.dll.a      -> libgdraw.a
-          GD=$(ls /mingw64/lib/libgdraw*.dll.a 2>/dev/null | head -n1)
-          if [ -n "$GD" ]; then cp -u "$GD" "$ROOTDIR/fontforge/build/lib/libgdraw.a"; fi
-          # always include these two if present
-          [ -f /mingw64/lib/libuninameslist.dll.a ] && \
-            cp -u /mingw64/lib/libuninameslist.dll.a "$ROOTDIR/fontforge/build/lib/libuninameslist.a"
-          [ -f /mingw64/lib/libspiro.dll.a ] && \
-            cp -u /mingw64/lib/libspiro.dll.a "$ROOTDIR/fontforge/build/lib/libspiro.a"
+
+          copy_one() {
+            dest="$1"; shift
+            for pat in "$@"; do
+              for f in $pat; do
+                if [ -f "$f" ]; then
+                  echo "  -> $dest <= $f"
+                  cp -u "$f" "$dest"
+                  return 0
+                fi
+              done
+            done
+            echo "  !! not found: $dest (patterns: $*)"
+            return 0   # do not fail here; linker will complain if truly needed
+          }
+
+          # MSYS2 may ship versioned import libs, e.g. libfontforge-3.dll.a, libgdraw-6.dll.a
+          copy_one "$ROOTDIR/fontforge/build/lib/libfontforge.a" \
+                   /mingw64/lib/libfontforge*.dll.a /mingw64/lib/libfontforge.a
+          copy_one "$ROOTDIR/fontforge/build/lib/libgdraw.a" \
+                   /mingw64/lib/libgdraw*.dll.a /mingw64/lib/libgdraw.a
+          copy_one "$ROOTDIR/fontforge/build/lib/libuninameslist.a" \
+                   /mingw64/lib/libuninameslist*.dll.a /mingw64/lib/libuninameslist.a
+          copy_one "$ROOTDIR/fontforge/build/lib/libspiro.a" \
+                   /mingw64/lib/libspiro*.dll.a /mingw64/lib/libspiro.a
 
           echo "=== Vendored shim tree ==="
           ls -R "$ROOTDIR"/fontforge "$ROOTDIR"/poppler 2>/dev/null || true
@@ -116,7 +130,7 @@ jobs:
           fi
           exit 0
 
-      # --------- PLAN B: build Poppler locally (only if Plan A failed) -------
+      # --------------------------- PLAN B: local Poppler ---------------------------
       - name: Build Poppler locally (fallback)
         if: env.PLAN_A != 'OK'
         shell: msys2 {0}
@@ -138,9 +152,7 @@ jobs:
               -DENABLE_UTILS=OFF \
               -DENABLE_QT5=OFF \
               -DENABLE_QT6=OFF \
-              -DENABLE_NSS3=OFF \
-              -DNSS3_FOUND=OFF \
-              -DWITH_NSS3=OFF \
+              -DENABLE_NSS3=OFF -DNSS3_FOUND=OFF -DWITH_NSS3=OFF \
               -DENABLE_GTK_DOC=OFF
             if cmake --build . --parallel; then
               test -f glib/libpoppler-glib.a || { echo "libpoppler-glib.a missing"; exit 2; }
@@ -179,6 +191,7 @@ jobs:
           strip "$EXE" || true
           echo "EXE=$EXE" >> $GITHUB_ENV
 
+      # --------------------------- Bundle & publish ---------------------------
       - name: Bundle DLLs (portable dist)
         shell: msys2 {0}
         run: |
