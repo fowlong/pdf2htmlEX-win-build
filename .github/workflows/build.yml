@@ -1,61 +1,92 @@
-name: Build PDF2HTMLEx
+name: win64-pdf2htmlEX
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
 
 jobs:
-  build:
+  build-win64:
     runs-on: windows-latest
 
-    defaults:
-      run:
-        shell: msys2 {0}
-
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      # --- 0) Checkout (your repo; actions use doesn't depend on MSYS shell)
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Clone pdf2htmlEX source
-      run: |
-        git clone --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
+      # --- 1) MSYS2 with MinGW-w64 (64-bit) toolchain + deps
+      - name: Setup MSYS2 (MINGW64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          # pkgconf is important so CMake+pkg-config resolve poppler/cairo/etc.
+          install: >
+            base-devel
+            git
+            cmake
+            ninja
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-poppler
+            mingw-w64-x86_64-cairo
+            mingw-w64-x86_64-fontforge
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-libxml2
+            mingw-w64-x86_64-icu
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-zlib
 
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >
-          base-devel
-          git
-          cmake
-          ninja
-          mingw-w64-x86_64-toolchain
-          mingw-w64-x86_64-poppler
-          mingw-w64-x86_64-cairo
-          mingw-w64-x86_64-fontforge
-          mingw-w64-x86_64-freetype
-          mingw-w64-x86_64-libpng
-          mingw-w64-x86_64-libjpeg-turbo
-          mingw-w64-x86_64-libxml2
-          mingw-w64-x86_64-icu
-          mingw-w64-x86_64-glib2
-          mingw-w64-x86_64-zlib
+      # --- 2) Fetch actual pdf2htmlEX sources (maintained fork) with submodules
+      - name: Fetch pdf2htmlEX sources
+        shell: msys2 {0}
+        run: |
+          set -e
+          git clone --depth 1 --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
+          test -f source/CMakeLists.txt || { echo "::error ::CMakeLists.txt not found in ./source"; ls -la source; exit 1; }
 
-    - name: Configure with CMake
-      run: |
-        mkdir build
-        cd build
-        cmake ../source -G Ninja -DCMAKE_BUILD_TYPE=Release
+      # --- 3) Configure (point CMake to /mingw64 and pkg-config)
+      - name: Configure (CMake + Ninja)
+        shell: msys2 {0}
+        env:
+          PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
+        run: |
+          set -e
+          cmake -S source -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64 \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DPKG_CONFIG_EXECUTABLE=/mingw64/bin/pkg-config
 
-    - name: Build with Ninja
-      run: |
-        cd build
-        ninja
+      # --- 4) Build
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          set -e
+          cmake --build build --config Release --parallel
+          strip build/src/pdf2htmlEX.exe
+          ls -l build/src/
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: pdf2htmlEX.exe
-        path: build/src/pdf2htmlEX.exe
+      # --- 5) Bundle all runtime DLLs alongside the EXE (portable folder)
+      - name: Bundle DLLs (portable dist)
+        shell: msys2 {0}
+        run: |
+          set -e
+          pacman -S --noconfirm --needed mingw-w64-x86_64-ntldd-git
+          mkdir -p dist
+          cp build/src/pdf2htmlEX.exe dist/
+          # copy dependent DLLs next to the exe
+          ntldd -R dist/pdf2htmlEX.exe | awk '/=>/ {print $3}' | tr -d '\r' | sort -u | xargs -I{} cp -u {} dist/ || true
+          echo "=== Dist contents ==="
+          ls -l dist/
+
+      # --- 6) Upload artifact
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf2htmlEX-win64-portable
+          path: dist/**
