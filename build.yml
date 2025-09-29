@@ -1,0 +1,59 @@
+name: Build PDF2HTMLEx for Windows
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Install MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >
+          base-devel
+          git
+          cmake
+          ninja
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-poppler
+          mingw-w64-x86_64-cairo
+          mingw-w64-x86_64-fontforge
+          mingw-w64-x86_64-freetype
+          mingw-w64-x86_64-libpng
+          mingw-w64-x86_64-libjpeg-turbo
+          mingw-w64-x86_64-libxml2
+          mingw-w64-x86_64-icu
+          mingw-w64-x86_64-glib2
+          mingw-w64-x86_64-zlib
+
+    - name: Create build directory
+      run: mkdir build
+
+    - name: Configure with CMake
+      run: |
+        cd build
+        cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build with Ninja
+      run: |
+        cd build
+        ninja
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pdf2htmlEX.exe
+        path: build/src/pdf2htmlEX.exe
