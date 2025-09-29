@@ -18,6 +18,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # NOTE: no inline comments here; pacman will try to install them.
           install: >-
             base-devel git cmake ninja zip
             mingw-w64-x86_64-toolchain mingw-w64-x86_64-pkgconf
@@ -30,8 +31,11 @@ jobs:
             mingw-w64-x86_64-fribidi mingw-w64-x86_64-zlib
             mingw-w64-x86_64-fontforge mingw-w64-x86_64-libspiro
             mingw-w64-x86_64-ntldd-git
-            # gendef/dlltool live here:
-            mingw-w64-x86_64-tools-git
+          path-type: minimal
+          cache: true
+          release: true
+          location: RUNNER_TEMP
+          platform-check-severity: fatal
 
       - name: Fetch pdf2htmlEX sources (no submodules)
         shell: msys2 {0}
@@ -70,7 +74,7 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-      - name: Create vendored shims for Poppler & FontForge (robust, synth implibs)
+      - name: Create vendored shims for Poppler & FontForge (synthesize implibs)
         shell: msys2 {0}
         run: |
           set -e
@@ -124,7 +128,6 @@ jobs:
                   (
                     set -e
                     cd "$tmp"
-                    # gendef writes a .def based on the DLL name
                     gendef "$(basename "$dll")" >/dev/null 2>&1 || true
                     def_file="$(ls *.def 2>/dev/null | head -n1)"
                     if [ -z "$def_file" ]; then
@@ -141,10 +144,8 @@ jobs:
             return 0
           }
 
-          # common DLL names seen in MSYS2 FontForge
           mk_implib fontforge /mingw64/bin/libfontforge*.dll /mingw64/bin/fontforge*.dll
           mk_implib gdraw     /mingw64/bin/libgdraw*.dll
-          # extra (harmless) helpers if present
           mk_implib gutils    /mingw64/bin/libgutils*.dll
           mk_implib gunicode  /mingw64/bin/libgunicode*.dll
 
@@ -172,7 +173,6 @@ jobs:
           exit 0
 
       # --------------------------- PLAN B: local Poppler (fallback) ---------------------------
-      # (rarely needed now; kept as a safety net)
       - name: Build Poppler locally (fallback)
         if: env.PLAN_A != 'OK'
         shell: msys2 {0}
