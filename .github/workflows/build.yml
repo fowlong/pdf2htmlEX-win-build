@@ -46,19 +46,16 @@ jobs:
           git clone --depth 1 --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
           test -f source/pdf2htmlEX/CMakeLists.txt || { echo "::error ::CMakeLists.txt not found at source/pdf2htmlEX/"; ls -la source; exit 1; }
           echo "Before patch:"
-          grep -Rni "cmake_minimum_required" source/pdf2htmlEX || true
+          sed -n '1,20p' source/pdf2htmlEX/CMakeLists.txt
 
-      # ---- STRONG patch: case-insensitive replace in ALL CMakeLists.txt
-      - name: Patch CMake minimum version (robust)
+      # ---- Deterministic patch of the ONE top-level file
+      - name: Patch CMake minimum version (single file)
         shell: msys2 {0}
         run: |
           set -e
-          find source -name CMakeLists.txt -print0 | xargs -0 -I{} \
-            sed -i -r 's/^[[:space:]]*[cC][mM][aA][kK][eE]_[mM][iI][nN][iI][mM][uU][mM]_[rR][eE][qQ][uU][iI][rR][eE][dD]\([^)]*\)/cmake_minimum_required(VERSION 3.5...3.30)/'
+          sed -i -E 's/^[[:space:]]*[cC][mM][aA][kK][eE]_[mM][iI][nN][iI][mM][uU][mM]_[rR][eE][qQ][uU][iI][rR][eE][dD].*/cmake_minimum_required(VERSION 3.5...3.30)/' source/pdf2htmlEX/CMakeLists.txt
           echo "After patch:"
-          grep -Rni "cmake_minimum_required" source/pdf2htmlEX || true
-          echo "Top 12 lines of project CMakeLists.txt:"
-          head -n 12 source/pdf2htmlEX/CMakeLists.txt
+          sed -n '1,20p' source/pdf2htmlEX/CMakeLists.txt
 
       - name: Configure (CMake + Ninja)
         shell: msys2 {0}
@@ -79,7 +76,6 @@ jobs:
         run: |
           set -e
           cmake --build build --config Release --parallel
-          # Consolidate exe path variants
           if [ -f build/src/pdf2htmlEX.exe ]; then cp -f build/src/pdf2htmlEX.exe build/; fi
           strip build/pdf2htmlEX.exe
           ls -l build/
