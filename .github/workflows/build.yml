@@ -29,7 +29,7 @@ jobs:
             mingw-w64-x86_64-lcms2 mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-fribidi mingw-w64-x86_64-zlib
             mingw-w64-x86_64-fontforge mingw-w64-x86_64-libspiro
-            mingw-w64-x86_64-ntldd-git
+            mingw-w64-x86_64-ntldd-git mingw-w64-x86_64-gendef
           path-type: minimal
           cache: true
 
@@ -53,12 +53,25 @@ jobs:
           find "$SRCDIR" -name CMakeLists.txt -print \
             -exec sed -i -E 's/cmake_minimum_required\s*\(\s*VERSION\s*[0-9.]+\)/cmake_minimum_required(VERSION 3.5)/g' {} +
 
-      - name: Ensure FontForge import library exists
+      - name: Synthesize FontForge import library if missing
         shell: msys2 {0}
         run: |
           set -e
           if [ ! -f /mingw64/lib/libfontforge.dll.a ]; then
-            echo "::error ::FontForge import library (libfontforge.dll.a) not found!"; exit 1
+            echo "libfontforge.dll.a missing, attempting to synthesize from DLL"
+            if [ -f /mingw64/bin/libfontforge-*.dll ]; then
+              DLLFILE=$(ls /mingw64/bin/libfontforge-*.dll | head -n 1)
+              gendef "$DLLFILE"
+              DEF=$(echo "$DLLFILE" | sed 's/\.dll$/.def/')
+              dlltool -d "$DEF" -l /mingw64/lib/libfontforge.dll.a
+              rm -f "$DEF"
+              echo "Synthesized libfontforge.dll.a from $DLLFILE"
+            else
+              echo "::error ::FontForge DLL not found, cannot synthesize import library!"; exit 1
+            fi
+          fi
+          if [ ! -f /mingw64/lib/libfontforge.dll.a ]; then
+            echo "::error ::FontForge import library (libfontforge.dll.a) still not found!"; exit 1
           fi
 
       - name: Configure
