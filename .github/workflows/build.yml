@@ -37,13 +37,24 @@ jobs:
             mingw-w64-x86_64-icu
             mingw-w64-x86_64-glib2
             mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-ntldd-git
 
       - name: Fetch pdf2htmlEX sources (maintained fork)
         shell: msys2 {0}
         run: |
           set -e
           git clone --depth 1 --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
-          test -f source/pdf2htmlEX/CMakeLists.txt || { echo "::error ::CMakeLists.txt not found at source/pdf2htmlEX/"; ls -la source; ls -la source/pdf2htmlEX || true; exit 1; }
+          test -f source/pdf2htmlEX/CMakeLists.txt || { echo "::error ::CMakeLists.txt not found at source/pdf2htmlEX/"; ls -la source; exit 1; }
+
+      # --- Patch all CMakeLists.txt to work with modern CMake (fixes your error)
+      - name: Patch CMake minimum version
+        shell: msys2 {0}
+        run: |
+          set -e
+          find source -name CMakeLists.txt -print0 | xargs -0 -I{} sed -i -E \
+            's/cmake_minimum_required\\(VERSION[[:space:]]+([0-9]+(\\.[0-9]+){0,2})([[:space:]]*\\))/cmake_minimum_required(VERSION 3.5...3.30)/' {}
+          echo "Top CMakeLists after patch:"
+          head -n 20 source/pdf2htmlEX/CMakeLists.txt
 
       - name: Configure (CMake + Ninja)
         shell: msys2 {0}
@@ -55,13 +66,16 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/mingw64 \
             -DCMAKE_CXX_STANDARD=17 \
-            -DPKG_CONFIG_EXECUTABLE=/mingw64/bin/pkg-config
+            -DPKG_CONFIG_EXECUTABLE=/mingw64/bin/pkg-config \
+            -Wno-dev
 
       - name: Build
         shell: msys2 {0}
         run: |
           set -e
           cmake --build build --config Release --parallel
+          # exe is usually at build/pdf2htmlEX.exe (or build/src/pdf2htmlEX.exe in some forks)
+          if [ -f build/src/pdf2htmlEX.exe ]; then cp build/src/pdf2htmlEX.exe build/; fi
           strip build/pdf2htmlEX.exe
           ls -l build/
 
@@ -70,14 +84,16 @@ jobs:
         run: |
           set -e
           cmake --install build --prefix pkg
-          ls -l pkg/bin/
+          # ensure exe is present even if install() rules are minimal
+          mkdir -p pkg/bin
+          [ -f build/pdf2htmlEX.exe ] && cp -u build/pdf2htmlEX.exe pkg/bin/
+          ls -l pkg/bin || true
           ls -l pkg/share/pdf2htmlEX || true
 
-      - name: Bundle runtime DLLs (portable)
+      - name: Bundle runtime DLLs (make portable)
         shell: msys2 {0}
         run: |
           set -e
-          pacman -S --noconfirm --needed mingw-w64-x86_64-ntldd-git
           ntldd -R pkg/bin/pdf2htmlEX.exe | awk '/=>/ {print $3}' | tr -d '\r' | sort -u | xargs -I{} cp -u {} pkg/bin/ || true
           echo "==== Final tree ===="
           find pkg -maxdepth 2 -type f -printf "%P\n" | sort
