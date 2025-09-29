@@ -1,4 +1,4 @@
-name: Build PDF2HTMLEx for Windows
+name: Build PDF2HTMLEx
 
 on:
   push:
@@ -17,7 +17,11 @@ jobs:
     - name: Checkout repo
       uses: actions/checkout@v4
 
-    - name: Install MSYS2
+    - name: Clone pdf2htmlEX source
+      run: |
+        git clone --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
+
+    - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
       with:
         msystem: MINGW64
@@ -39,13 +43,11 @@ jobs:
           mingw-w64-x86_64-glib2
           mingw-w64-x86_64-zlib
 
-    - name: Create build directory
-      run: mkdir build
-
     - name: Configure with CMake
       run: |
+        mkdir build
         cd build
-        cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake ../source -G Ninja -DCMAKE_BUILD_TYPE=Release
 
     - name: Build with Ninja
       run: |
