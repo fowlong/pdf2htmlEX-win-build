@@ -30,6 +30,8 @@ jobs:
             mingw-w64-x86_64-fribidi mingw-w64-x86_64-zlib
             mingw-w64-x86_64-fontforge mingw-w64-x86_64-libspiro
             mingw-w64-x86_64-ntldd-git
+            # gendef/dlltool live here:
+            mingw-w64-x86_64-tools-git
 
       - name: Fetch pdf2htmlEX sources (no submodules)
         shell: msys2 {0}
@@ -68,10 +70,11 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-      - name: Create vendored shims for Poppler & FontForge (robust)
+      - name: Create vendored shims for Poppler & FontForge (robust, synth implibs)
         shell: msys2 {0}
         run: |
           set -e
+
           echo "== Poppler shims =="
           mkdir -p "$ROOTDIR/poppler/build/glib" "$ROOTDIR/poppler/build"
           [ -f /mingw64/lib/libpoppler-glib.dll.a ] && \
@@ -79,7 +82,7 @@ jobs:
           [ -f /mingw64/lib/libpoppler.dll.a ] && \
             cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a" || true
 
-          echo "== FontForge shims (no ls, glob-safe) =="
+          echo "== FontForge shims (copy if present) =="
           mkdir -p "$ROOTDIR/fontforge/build/lib"
 
           copy_one() {
@@ -94,18 +97,56 @@ jobs:
               done
             done
             echo "  !! not found: $dest (patterns: $*)"
-            return 0   # do not fail here; linker will complain if truly needed
+            return 1
           }
 
-          # MSYS2 may ship versioned import libs, e.g. libfontforge-3.dll.a, libgdraw-6.dll.a
+          # try import libs first
           copy_one "$ROOTDIR/fontforge/build/lib/libfontforge.a" \
-                   /mingw64/lib/libfontforge*.dll.a /mingw64/lib/libfontforge.a
+                   /mingw64/lib/libfontforge*.dll.a /mingw64/lib/libfontforge.a || true
           copy_one "$ROOTDIR/fontforge/build/lib/libgdraw.a" \
-                   /mingw64/lib/libgdraw*.dll.a /mingw64/lib/libgdraw.a
+                   /mingw64/lib/libgdraw*.dll.a /mingw64/lib/libgdraw.a || true
           copy_one "$ROOTDIR/fontforge/build/lib/libuninameslist.a" \
-                   /mingw64/lib/libuninameslist*.dll.a /mingw64/lib/libuninameslist.a
+                   /mingw64/lib/libuninameslist*.dll.a /mingw64/lib/libuninameslist.a || true
           copy_one "$ROOTDIR/fontforge/build/lib/libspiro.a" \
-                   /mingw64/lib/libspiro*.dll.a /mingw64/lib/libspiro.a
+                   /mingw64/lib/libspiro*.dll.a /mingw64/lib/libspiro.a || true
+
+          echo "== Synthesize missing import libs from DLLs (gendef + dlltool) =="
+          mk_implib() {
+            base="$1"; shift
+            dest="$ROOTDIR/fontforge/build/lib/lib${base}.a"
+            [ -f "$dest" ] && { echo "  -> already present: $dest"; return 0; }
+            for pat in "$@"; do
+              for dll in $pat; do
+                if [ -f "$dll" ]; then
+                  echo "  -> making $dest from $dll"
+                  tmp="$(mktemp -d)"
+                  cp "$dll" "$tmp/"
+                  (
+                    set -e
+                    cd "$tmp"
+                    # gendef writes a .def based on the DLL name
+                    gendef "$(basename "$dll")" >/dev/null 2>&1 || true
+                    def_file="$(ls *.def 2>/dev/null | head -n1)"
+                    if [ -z "$def_file" ]; then
+                      echo "     !! gendef produced no .def for $dll"; exit 1
+                    fi
+                    dlltool -d "$def_file" -l "$dest"
+                  )
+                  rm -rf "$tmp"
+                  [ -f "$dest" ] && { echo "     OK: $dest"; return 0; }
+                fi
+              done
+            done
+            echo "  !! could not synthesize lib${base}.a (no matching DLLs)"
+            return 0
+          }
+
+          # common DLL names seen in MSYS2 FontForge
+          mk_implib fontforge /mingw64/bin/libfontforge*.dll /mingw64/bin/fontforge*.dll
+          mk_implib gdraw     /mingw64/bin/libgdraw*.dll
+          # extra (harmless) helpers if present
+          mk_implib gutils    /mingw64/bin/libgutils*.dll
+          mk_implib gunicode  /mingw64/bin/libgunicode*.dll
 
           echo "=== Vendored shim tree ==="
           ls -R "$ROOTDIR"/fontforge "$ROOTDIR"/poppler 2>/dev/null || true
@@ -130,7 +171,8 @@ jobs:
           fi
           exit 0
 
-      # --------------------------- PLAN B: local Poppler ---------------------------
+      # --------------------------- PLAN B: local Poppler (fallback) ---------------------------
+      # (rarely needed now; kept as a safety net)
       - name: Build Poppler locally (fallback)
         if: env.PLAN_A != 'OK'
         shell: msys2 {0}
