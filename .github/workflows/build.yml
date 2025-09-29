@@ -43,7 +43,6 @@ jobs:
           else
             echo "::error ::CMakeLists.txt not found in cloned repo"; exit 1
           fi
-          # Record the repo root (used for vendored path shims)
           ROOT="$PWD/source"
           case "$SRCDIR" in */pdf2htmlEX) ROOT="$(dirname "$SRCDIR")";; esac
           echo "ROOTDIR=$ROOT" >> $GITHUB_ENV
@@ -69,19 +68,27 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-      - name: Create vendored Poppler shims (if build expects them)
+      - name: Create vendored shims for Poppler & FontForge
         shell: msys2 {0}
         run: |
           set -e
-          # Some pdf2htmlEX CMake setups hardcode these paths; map system libs there.
+          # Poppler shims (match hard-coded vendored paths some forks expect)
           mkdir -p "$ROOTDIR/poppler/build/glib" "$ROOTDIR/poppler/build"
-          if [ -f /mingw64/lib/libpoppler-glib.dll.a ]; then
+          [ -f /mingw64/lib/libpoppler-glib.dll.a ] && \
             cp -u /mingw64/lib/libpoppler-glib.dll.a "$ROOTDIR/poppler/build/glib/libpoppler-glib.a"
-          fi
-          if [ -f /mingw64/lib/libpoppler.dll.a ]; then
+          [ -f /mingw64/lib/libpoppler.dll.a ] && \
             cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a"
-          fi
-          ls -R "$ROOTDIR/poppler" || true
+
+          # FontForge shims (this is what your last log complained about)
+          mkdir -p "$ROOTDIR/fontforge/build/lib"
+          for lib in libfontforge libgdraw libuninameslist libspiro; do
+            if [ -f "/mingw64/lib/${lib}.dll.a" ]; then
+              cp -u "/mingw64/lib/${lib}.dll.a" "$ROOTDIR/fontforge/build/lib/${lib}.a"
+            fi
+          done
+
+          echo "=== Vendored shim tree ==="
+          ls -R "$ROOTDIR"/poppler "$ROOTDIR"/fontforge 2>/dev/null || true
 
       - name: Build (Plan A)
         shell: msys2 {0}
@@ -103,7 +110,7 @@ jobs:
           fi
           exit 0
 
-      # --------- PLAN B: build Poppler locally to satisfy vendored path -------
+      # --------- PLAN B: build Poppler locally (only if Plan A failed) -------
       - name: Build Poppler locally (fallback)
         if: env.PLAN_A != 'OK'
         shell: msys2 {0}
@@ -121,15 +128,12 @@ jobs:
               -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
               -DBUILD_SHARED_LIBS=OFF \
               -DENABLE_GLIB=ON \
-              -DENABLE_CAIRO=ON \
               -DENABLE_CPP=OFF \
               -DENABLE_UTILS=OFF \
               -DENABLE_QT5=OFF \
               -DENABLE_QT6=OFF \
-              -DENABLE_GPGME=OFF \
-              -DENABLE_LIBCURL=OFF \
-              -DRUN_GPERF_IF_PRESENT=OFF \
-              -DENABLE_UNSTABLE_API_ABI_HEADERS=ON
+              -DENABLE_NSS3=OFF \
+              -DENABLE_GTK_DOC=OFF
             if cmake --build . --parallel; then
               test -f glib/libpoppler-glib.a || { echo "libpoppler-glib.a missing"; exit 2; }
               echo "POP_LOCAL_OK=1" >> $GITHUB_ENV
@@ -167,7 +171,6 @@ jobs:
           strip "$EXE" || true
           echo "EXE=$EXE" >> $GITHUB_ENV
 
-      # ----------------- Portable bundling -----------------
       - name: Bundle DLLs (portable dist)
         shell: msys2 {0}
         run: |
