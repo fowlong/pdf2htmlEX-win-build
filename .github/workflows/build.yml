@@ -4,16 +4,17 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-  pull_request:
 
 jobs:
-  build-win64:
+  build:
     runs-on: windows-latest
 
     steps:
+      # 0) Checkout (your repo; source is cloned below)
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 1) Install MSYS2 (64-bit MinGW) + deps
       - name: Setup MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
@@ -24,11 +25,8 @@ jobs:
             git
             cmake
             ninja
-            zip
-            # toolchain
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-pkgconf
-            # pdf2htmlEX runtime deps (system plan)
             mingw-w64-x86_64-poppler
             mingw-w64-x86_64-poppler-data
             mingw-w64-x86_64-cairo
@@ -46,25 +44,30 @@ jobs:
             mingw-w64-x86_64-fontforge
             mingw-w64-x86_64-ntldd-git
 
-      - name: Fetch pdf2htmlEX sources (maintained fork)
+      # 2) Get pdf2htmlEX sources (maintained fork)
+      - name: Fetch pdf2htmlEX sources
         shell: msys2 {0}
         run: |
           set -e
           git clone --depth 1 --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
-          # detect where CMakeLists.txt actually is
           if [ -f source/CMakeLists.txt ]; then
             echo "SRCDIR=$PWD/source" >> $GITHUB_ENV
           elif [ -f source/pdf2htmlEX/CMakeLists.txt ]; then
             echo "SRCDIR=$PWD/source/pdf2htmlEX" >> $GITHUB_ENV
           else
-            echo "::error ::CMakeLists.txt not found in cloned repo"
-            exit 1
+            echo "::error ::CMakeLists.txt not found in cloned repo"; exit 1
           fi
 
-      # ---------- Plan A: use MSYS2 Poppler via pkg-config ----------
-      - name: Configure (Plan A: system Poppler)
-        id: cfg_sys
-        continue-on-error: true
+      # 3) Patch too-old CMake minimums to 3.5 (avoids the policy error you saw)
+      - name: Patch CMake minimum versions (to 3.5)
+        shell: msys2 {0}
+        run: |
+          set -e
+          find "$SRCDIR" -name CMakeLists.txt -print \
+            -exec sed -i -E 's/cmake_minimum_required\s*\(\s*VERSION\s*[0-9.]+\)/cmake_minimum_required(VERSION 3.5)/g' {} +
+
+      # 4) Configure with CMake (uses MSYS2 Poppler via pkg-config)
+      - name: Configure (CMake + Ninja)
         shell: msys2 {0}
         env:
           PKG_CONFIG_EXECUTABLE: /mingw64/bin/pkg-config
@@ -74,109 +77,42 @@ jobs:
           cmake -S "$SRCDIR" -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/mingw64 \
-            -DCMAKE_CXX_STANDARD=17
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           pkg-config --modversion poppler-glib || true
 
-      - name: Build (Plan A)
-        id: build_sys
-        if: steps.cfg_sys.outcome == 'success'
-        continue-on-error: true
+      # 5) Build
+      - name: Build
         shell: msys2 {0}
         run: |
           set -e
-          cmake --build build --config Release --parallel
+          cmake --build build --parallel
           EXE=""
           [ -f build/pdf2htmlEX.exe ] && EXE="build/pdf2htmlEX.exe"
           [ -z "$EXE" ] && [ -f build/src/pdf2htmlEX.exe ] && EXE="build/src/pdf2htmlEX.exe"
-          [ -z "$EXE" ] && { echo "::error ::pdf2htmlEX.exe not found after Plan A build"; exit 1; }
+          [ -z "$EXE" ] && { echo "::error ::pdf2htmlEX.exe not found"; ls -R build; exit 1; }
           strip "$EXE" || true
           echo "EXE=$EXE" >> $GITHUB_ENV
 
-      # ---------- Plan B (fallback): build Poppler from source ----------
-      - name: Build Poppler (Plan B fallback)
-        id: build_poppler
-        if: steps.build_sys.outcome != 'success'
-        shell: msys2 {0}
-        run: |
-          set -e
-          mkdir -p /opt && cd /opt
-          # try a couple of known-good tags for pdf2htmlEX
-          for TAG in poppler-0.89.0 poppler-0.86.1; do
-            echo ">>> Trying Poppler tag: $TAG"
-            rm -rf poppler || true
-            git clone --depth 1 --branch "$TAG" https://gitlab.freedesktop.org/poppler/poppler.git
-            cd poppler
-            rm -rf build && mkdir build && cd build
-            cmake .. -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_PREFIX_PATH=/mingw64 \
-              -DCMAKE_INSTALL_PREFIX=/opt/poppler-install \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DENABLE_GLIB=ON \
-              -DENABLE_CAIRO=ON \
-              -DENABLE_CPP=OFF \
-              -DENABLE_UTILS=OFF \
-              -DENABLE_QT5=OFF \
-              -DENABLE_QT6=OFF \
-              -DENABLE_GPGME=OFF \
-              -DENABLE_LIBCURL=OFF \
-              -DRUN_GPERF_IF_PRESENT=OFF \
-              -DENABLE_UNSTABLE_API_ABI_HEADERS=ON
-            if cmake --build . --config Release --parallel && cmake --install .; then
-              echo "POPPLER_PC=/opt/poppler-install/lib/pkgconfig" >> $GITHUB_ENV
-              echo "POPPLER_OK=1" >> $GITHUB_ENV
-              break
-            fi
-            cd /opt
-          done
-          test "$POPPLER_OK" = "1" || { echo "::error ::Failed to build Poppler fallback"; exit 1; }
-
-      - name: Re-configure pdf2htmlEX (Plan B using vendored Poppler)
-        id: cfg_local
-        if: steps.build_sys.outcome != 'success'
-        shell: msys2 {0}
-        env:
-          PKG_CONFIG_EXECUTABLE: /mingw64/bin/pkg-config
-          # Prefer vendored poppler first, then system
-          PKG_CONFIG_PATH: ${{ env.POPPLER_PC }}:/mingw64/lib/pkgconfig
-        run: |
-          set -e
-          cmake -S "$SRCDIR" -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64 \
-            -DCMAKE_CXX_STANDARD=17
-          pkg-config --modversion poppler-glib
-
-      - name: Build (Plan B)
-        id: build_local
-        if: steps.build_sys.outcome != 'success'
-        shell: msys2 {0}
-        run: |
-          set -e
-          cmake --build build --config Release --parallel
-          EXE=""
-          [ -f build/pdf2htmlEX.exe ] && EXE="build/pdf2htmlEX.exe"
-          [ -z "$EXE" ] && [ -f build/src/pdf2htmlEX.exe ] && EXE="build/src/pdf2htmlEX.exe"
-          [ -z "$EXE" ] && { echo "::error ::pdf2htmlEX.exe not found after Plan B build"; exit 1; }
-          strip "$EXE" || true
-          echo "EXE=$EXE" >> $GITHUB_ENV
-
-      # ---------- Portable bundle ----------
-      - name: Bundle DLLs (portable)
+      # 6) Bundle runtime DLLs and poppler-data → portable folder
+      - name: Bundle DLLs (portable dist)
         shell: msys2 {0}
         run: |
           set -e
           mkdir -p dist
           cp "$EXE" dist/
-          ntldd -R dist/pdf2htmlEX.exe | awk '/=>/ {print $3}' | tr -d '\r' | sort -u | xargs -I{} cp -u {} dist/ || true
-          # include poppler-data (cmaps)
+          # copy only MinGW DLLs (ignore Windows system DLLs)
+          ntldd -R dist/pdf2htmlEX.exe \
+            | awk '/=>/ && $3 ~ /^\/mingw64\/bin\// {print $3}' \
+            | tr -d '\r' | sort -u | xargs -I{} cp -u {} dist/ || true
+          # include poppler data (cmaps, etc.)
           if [ -d /mingw64/share/poppler ]; then
             mkdir -p dist/share
-            (cd /mingw64/share && zip -r -9 "$GITHUB_WORKSPACE/poppler-share.zip" poppler >/dev/null)
-            unzip -qq "$GITHUB_WORKSPACE/poppler-share.zip" -d dist/share
+            cp -r /mingw64/share/poppler dist/share/
           fi
-          ls -l dist/
+          echo "=== Dist contents ==="; ls -l dist/
 
+      # 7) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
