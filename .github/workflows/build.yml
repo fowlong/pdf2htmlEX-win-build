@@ -45,9 +45,6 @@ jobs:
           else
             echo "::error ::CMakeLists.txt not found in cloned repo"; exit 1
           fi
-          ROOT="$PWD/source"
-          case "$SRCDIR" in */pdf2htmlEX) ROOT="$(dirname "$SRCDIR")";; esac
-          echo "ROOTDIR=$ROOT" >> $GITHUB_ENV
 
       - name: Patch CMake minimum versions (to 3.5)
         shell: msys2 {0}
@@ -56,8 +53,15 @@ jobs:
           find "$SRCDIR" -name CMakeLists.txt -print \
             -exec sed -i -E 's/cmake_minimum_required\s*\(\s*VERSION\s*[0-9.]+\)/cmake_minimum_required(VERSION 3.5)/g' {} +
 
-      # --------- Plan A: build with system Poppler ------------
-      - name: Configure (Plan A)
+      - name: Ensure FontForge import library exists
+        shell: msys2 {0}
+        run: |
+          set -e
+          if [ ! -f /mingw64/lib/libfontforge.dll.a ]; then
+            echo "::error ::FontForge import library (libfontforge.dll.a) not found!"; exit 1
+          fi
+
+      - name: Configure
         shell: msys2 {0}
         env:
           PKG_CONFIG_EXECUTABLE: /mingw64/bin/pkg-config
@@ -70,92 +74,7 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-      - name: Synth import libs for Poppler & FontForge
-        shell: msys2 {0}
-        run: |
-          set -e
-          mkdir -p "$ROOTDIR/poppler/build/glib" "$ROOTDIR/poppler/build"
-          [ -f /mingw64/lib/libpoppler-glib.dll.a ] && \
-            cp -u /mingw64/lib/libpoppler-glib.dll.a "$ROOTDIR/poppler/build/glib/libpoppler-glib.a" || true
-          [ -f /mingw64/lib/libpoppler.dll.a ] && \
-            cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a" || true
-          mkdir -p "$ROOTDIR/fontforge/build/lib"
-          for base in fontforge gdraw uninameslist spiro; do
-            for pat in /mingw64/lib/lib${base}*.dll.a /mingw64/lib/lib${base}.a; do
-              [ -f "$pat" ] && cp -u "$pat" "$ROOTDIR/fontforge/build/lib/lib${base}.a" && break
-            done
-          done
-
-      - name: Build (Plan A)
-        shell: msys2 {0}
-        run: |
-          set +e
-          cmake --build build --parallel
-          rc=$?
-          EXE=""
-          if [ $rc -eq 0 ]; then
-            [ -f build/pdf2htmlEX.exe ] && EXE="build/pdf2htmlEX.exe"
-            [ -z "$EXE" ] && [ -f build/src/pdf2htmlEX.exe ] && EXE="build/src/pdf2htmlEX.exe"
-          fi
-          if [ -n "$EXE" ]; then
-            strip "$EXE" 2>/dev/null
-            echo "EXE=$EXE"  >> $GITHUB_ENV
-            echo "PLAN_A=OK" >> $GITHUB_ENV
-          else
-            echo "PLAN_A=FAIL" >> $GITHUB_ENV
-          fi
-          exit 0
-
-      # --------- Plan B: build Poppler locally (fallback) ------------
-      - name: Build Poppler locally (fallback)
-        if: env.PLAN_A != 'OK'
-        shell: msys2 {0}
-        run: |
-          set -e
-          cd "$ROOTDIR"
-          rm -rf poppler
-          for TAG in poppler-0.89.0 poppler-0.86.1 poppler-0.81.0; do
-            echo ">>> Building Poppler $TAG"
-            git clone --depth 1 --branch "$TAG" https://gitlab.freedesktop.org/poppler/poppler.git poppler || continue
-            mkdir -p poppler/build && cd poppler/build
-            cmake .. -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_PREFIX_PATH=/mingw64 \
-              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DENABLE_GLIB=ON \
-              -DENABLE_CPP=OFF \
-              -DENABLE_UTILS=OFF \
-              -DENABLE_QT5=OFF \
-              -DENABLE_QT6=OFF \
-              -DENABLE_NSS3=OFF -DNSS3_FOUND=OFF -DWITH_NSS3=OFF \
-              -DENABLE_GTK_DOC=OFF
-            if cmake --build . --parallel; then
-              test -f glib/libpoppler-glib.a || { echo "libpoppler-glib.a missing"; exit 2; }
-              echo "POP_LOCAL_OK=1" >> $GITHUB_ENV
-              break
-            fi
-            cd "$ROOTDIR"; rm -rf poppler
-          done
-          test "$POP_LOCAL_OK" = "1"
-
-      - name: Reconfigure using local Poppler
-        if: env.PLAN_A != 'OK'
-        shell: msys2 {0}
-        env:
-          PKG_CONFIG_EXECUTABLE: /mingw64/bin/pkg-config
-          PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
-        run: |
-          set -e
-          rm -rf build
-          cmake -S "$SRCDIR" -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64 \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-
-      - name: Build (Plan B)
-        if: env.PLAN_A != 'OK'
+      - name: Build
         shell: msys2 {0}
         run: |
           set -e
@@ -163,11 +82,10 @@ jobs:
           EXE=""
           [ -f build/pdf2htmlEX.exe ] && EXE="build/pdf2htmlEX.exe"
           [ -z "$EXE" ] && [ -f build/src/pdf2htmlEX.exe ] && EXE="build/src/pdf2htmlEX.exe"
-          [ -z "$EXE" ] && { echo "::error ::pdf2htmlEX.exe not found after Plan B build"; ls -R build; exit 1; }
+          [ -z "$EXE" ] && { echo "::error ::pdf2htmlEX.exe not found after build"; ls -R build; exit 1; }
           strip "$EXE" || true
           echo "EXE=$EXE" >> $GITHUB_ENV
 
-      # --------- Bundle and upload ------------
       - name: Bundle DLLs (portable dist)
         shell: msys2 {0}
         run: |
