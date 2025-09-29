@@ -43,8 +43,10 @@ jobs:
           else
             echo "::error ::CMakeLists.txt not found in cloned repo"; exit 1
           fi
-          # ensure no vendored poppler to tempt CMake in Plan A
-          [ -d source/poppler ] && rm -rf source/poppler || true
+          # Record the repo root (used for vendored path shims)
+          ROOT="$PWD/source"
+          case "$SRCDIR" in */pdf2htmlEX) ROOT="$(dirname "$SRCDIR")";; esac
+          echo "ROOTDIR=$ROOT" >> $GITHUB_ENV
 
       - name: Patch CMake minimum versions (to 3.5)
         shell: msys2 {0}
@@ -54,26 +56,41 @@ jobs:
             -exec sed -i -E 's/cmake_minimum_required\s*\(\s*VERSION\s*[0-9.]+\)/cmake_minimum_required(VERSION 3.5)/g' {} +
 
       # ---------------- PLAN A: system Poppler via pkg-config ----------------
-      - name: Try Plan A (system Poppler)
+      - name: Configure (Plan A)
         shell: msys2 {0}
         env:
           PKG_CONFIG_EXECUTABLE: /mingw64/bin/pkg-config
           PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
         run: |
-          set +e
+          set -e
           cmake -S "$SRCDIR" -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/mingw64 \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          rc_cfg=$?
-          if [ $rc_cfg -ne 0 ]; then
-            echo "PLAN_A=FAIL" >> $GITHUB_ENV
-            exit 0
+
+      - name: Create vendored Poppler shims (if build expects them)
+        shell: msys2 {0}
+        run: |
+          set -e
+          # Some pdf2htmlEX CMake setups hardcode these paths; map system libs there.
+          mkdir -p "$ROOTDIR/poppler/build/glib" "$ROOTDIR/poppler/build"
+          if [ -f /mingw64/lib/libpoppler-glib.dll.a ]; then
+            cp -u /mingw64/lib/libpoppler-glib.dll.a "$ROOTDIR/poppler/build/glib/libpoppler-glib.a"
           fi
+          if [ -f /mingw64/lib/libpoppler.dll.a ]; then
+            cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a"
+          fi
+          ls -R "$ROOTDIR/poppler" || true
+
+      - name: Build (Plan A)
+        shell: msys2 {0}
+        run: |
+          set +e
           cmake --build build --parallel
-          rc_bld=$?
-          if [ $rc_bld -eq 0 ]; then
+          rc=$?
+          EXE=""
+          if [ $rc -eq 0 ]; then
             [ -f build/pdf2htmlEX.exe ] && EXE="build/pdf2htmlEX.exe"
             [ -z "$EXE" ] && [ -f build/src/pdf2htmlEX.exe ] && EXE="build/src/pdf2htmlEX.exe"
           fi
@@ -87,13 +104,12 @@ jobs:
           exit 0
 
       # --------- PLAN B: build Poppler locally to satisfy vendored path -------
-      - name: Fallback Plan B – build Poppler locally
+      - name: Build Poppler locally (fallback)
         if: env.PLAN_A != 'OK'
         shell: msys2 {0}
         run: |
           set -e
-          ROOT="$SRCDIR"; case "$ROOT" in */pdf2htmlEX) ROOT="$(dirname "$ROOT")";; esac
-          mkdir -p "$ROOT"; cd "$ROOT"
+          cd "$ROOTDIR"
           rm -rf poppler
           for TAG in poppler-0.89.0 poppler-0.86.1 poppler-0.81.0; do
             echo ">>> Building Poppler $TAG"
@@ -102,6 +118,7 @@ jobs:
             cmake .. -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_PREFIX_PATH=/mingw64 \
+              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
               -DBUILD_SHARED_LIBS=OFF \
               -DENABLE_GLIB=ON \
               -DENABLE_CAIRO=ON \
@@ -118,7 +135,7 @@ jobs:
               echo "POP_LOCAL_OK=1" >> $GITHUB_ENV
               break
             fi
-            cd "$ROOT"; rm -rf poppler
+            cd "$ROOTDIR"; rm -rf poppler
           done
           test "$POP_LOCAL_OK" = "1"
 
@@ -150,6 +167,7 @@ jobs:
           strip "$EXE" || true
           echo "EXE=$EXE" >> $GITHUB_ENV
 
+      # ----------------- Portable bundling -----------------
       - name: Bundle DLLs (portable dist)
         shell: msys2 {0}
         run: |
