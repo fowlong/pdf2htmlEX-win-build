@@ -11,9 +11,11 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout (your repo)
+      # 0) Checkout (your repo)
+      - name: Checkout
         uses: actions/checkout@v4
 
+      # 1) MSYS2 (64-bit MinGW toolchain) + required libs
       - name: Setup MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
@@ -24,40 +26,69 @@ jobs:
             git
             cmake
             ninja
+            zip
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-poppler
             mingw-w64-x86_64-cairo
-            mingw-w64-x86_64-fontforge
             mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-fontconfig
             mingw-w64-x86_64-libpng
             mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-glib2
             mingw-w64-x86_64-libxml2
             mingw-w64-x86_64-icu
-            mingw-w64-x86_64-glib2
             mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-fontforge
             mingw-w64-x86_64-ntldd-git
 
-      - name: Fetch pdf2htmlEX sources (maintained fork)
+      # 2) Get pdf2htmlEX sources (maintained fork)
+      - name: Fetch pdf2htmlEX sources
         shell: msys2 {0}
         run: |
           set -e
           git clone --depth 1 --recursive https://github.com/pdf2htmlEX/pdf2htmlEX.git source
-          test -f source/pdf2htmlEX/CMakeLists.txt || { echo "::error ::CMakeLists.txt not found at source/pdf2htmlEX/"; ls -la source; exit 1; }
-          echo "Before patch:"
-          sed -n '1,20p' source/pdf2htmlEX/CMakeLists.txt
+          test -f source/pdf2htmlEX/CMakeLists.txt || { echo "::error ::pdf2htmlEX CMakeLists not found"; exit 1; }
 
-      # ---- Deterministic patch of the ONE top-level file
-      - name: Patch CMake minimum version (single file)
+      # 3) Fetch Poppler sources (tag known to work) into source/poppler
+      #    Using the GitHub mirror so we don't rely on GitLab rate limits.
+      - name: Fetch Poppler 0.81.0
         shell: msys2 {0}
         run: |
           set -e
-          sed -i -E 's/^[[:space:]]*[cC][mM][aA][kK][eE]_[mM][iI][nN][iI][mM][uU][mM]_[rR][eE][qQ][uU][iI][rR][eE][dD].*/cmake_minimum_required(VERSION 3.5...3.30)/' source/pdf2htmlEX/CMakeLists.txt
-          echo "After patch:"
-          sed -n '1,20p' source/pdf2htmlEX/CMakeLists.txt
+          cd source
+          git clone --depth 1 --branch poppler-0.81.0 https://github.com/tsdgeos/poppler_mirror.git poppler
+          ls -la poppler
 
-      - name: Configure (CMake + Ninja)
+      # 4) Build Poppler (static libs, GLib+Cairo only) in source/poppler/build
+      - name: Build Poppler (static, GLib)
+        shell: msys2 {0}
+        env:
+          CC: gcc
+          CXX: g++
+        run: |
+          set -e
+          cd source/poppler
+          mkdir -p build && cd build
+          cmake .. -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64 \
+            -DCMAKE_INSTALL_PREFIX=$PWD/../dist \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_GLIB=ON \
+            -DENABLE_CAIRO=ON \
+            -DENABLE_CPP=OFF \
+            -DENABLE_UTILS=OFF \
+            -DENABLE_QT5=OFF \
+            -DENABLE_QT6=OFF \
+            -DENABLE_GPGME=OFF \
+            -DENABLE_LIBCURL=OFF \
+            -DRUN_GPERF_IF_PRESENT=OFF \
+            -DENABLE_UNSTABLE_API_ABI_HEADERS=ON
+          cmake --build . --config Release --parallel
+          # Sanity check: the lib the linker complained about must exist now
+          test -f glib/libpoppler-glib.a || { echo "::error ::libpoppler-glib.a missing after build"; ls -R; exit 1; }
+
+      # 5) Configure pdf2htmlEX (points to subdir that has CMakeLists)
+      - name: Configure pdf2htmlEX (CMake + Ninja)
         shell: msys2 {0}
         env:
           PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
@@ -66,40 +97,34 @@ jobs:
           cmake -S source/pdf2htmlEX -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/mingw64 \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DPKG_CONFIG_EXECUTABLE=/mingw64/bin/pkg-config \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -Wno-dev
+            -DCMAKE_CXX_STANDARD=17
+          # Show what Poppler libs CMake decided to use
+          cmake --build build --target help | head -n 50 || true
 
+      # 6) Build pdf2htmlEX
       - name: Build
         shell: msys2 {0}
         run: |
           set -e
           cmake --build build --config Release --parallel
-          if [ -f build/src/pdf2htmlEX.exe ]; then cp -f build/src/pdf2htmlEX.exe build/; fi
-          strip build/pdf2htmlEX.exe
+          strip build/pdf2htmlEX.exe || true
           ls -l build/
 
-      - name: Install to prefix (exe + share/)
+      # 7) Bundle runtime DLLs into a portable folder
+      - name: Bundle DLLs (portable dist)
         shell: msys2 {0}
         run: |
           set -e
-          cmake --install build --prefix pkg
-          mkdir -p pkg/bin
-          [ -f build/pdf2htmlEX.exe ] && cp -u build/pdf2htmlEX.exe pkg/bin/
-          ls -l pkg/bin || true
-          ls -l pkg/share/pdf2htmlEX || true
+          mkdir -p dist
+          cp build/pdf2htmlEX.exe dist/
+          # Bring in dependent DLLs next to the exe
+          ntldd -R dist/pdf2htmlEX.exe | awk '/=>/ {print $3}' | tr -d '\r' | sort -u | xargs -I{} cp -u {} dist/ || true
+          echo "=== Dist contents ==="
+          ls -l dist/
 
-      - name: Bundle runtime DLLs (portable)
-        shell: msys2 {0}
-        run: |
-          set -e
-          ntldd -R pkg/bin/pdf2htmlEX.exe | awk '/=>/ {print $3}' | tr -d '\r' | sort -u | xargs -I{} cp -u {} pkg/bin/ || true
-          echo "==== Final portable tree ===="
-          find pkg -maxdepth 2 -type f -printf "%P\n" | sort
-
+      # 8) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pdf2htmlEX-win64-portable
-          path: pkg/**
+          path: dist/**
