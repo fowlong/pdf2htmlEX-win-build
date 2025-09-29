@@ -68,27 +68,33 @@ jobs:
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-      - name: Create vendored shims for Poppler & FontForge
+      - name: Create vendored shims for Poppler & FontForge (robust)
         shell: msys2 {0}
         run: |
           set -e
-          # Poppler shims (match hard-coded vendored paths some forks expect)
+          echo "== Poppler shims =="
           mkdir -p "$ROOTDIR/poppler/build/glib" "$ROOTDIR/poppler/build"
           [ -f /mingw64/lib/libpoppler-glib.dll.a ] && \
             cp -u /mingw64/lib/libpoppler-glib.dll.a "$ROOTDIR/poppler/build/glib/libpoppler-glib.a"
           [ -f /mingw64/lib/libpoppler.dll.a ] && \
             cp -u /mingw64/lib/libpoppler.dll.a "$ROOTDIR/poppler/build/libpoppler.a"
 
-          # FontForge shims (this is what your last log complained about)
+          echo "== FontForge shims (glob versioned import libs) =="
           mkdir -p "$ROOTDIR/fontforge/build/lib"
-          for lib in libfontforge libgdraw libuninameslist libspiro; do
-            if [ -f "/mingw64/lib/${lib}.dll.a" ]; then
-              cp -u "/mingw64/lib/${lib}.dll.a" "$ROOTDIR/fontforge/build/lib/${lib}.a"
-            fi
-          done
+          # libfontforge*.dll.a  -> libfontforge.a
+          FF=$(ls /mingw64/lib/libfontforge*.dll.a 2>/dev/null | head -n1)
+          if [ -n "$FF" ]; then cp -u "$FF" "$ROOTDIR/fontforge/build/lib/libfontforge.a"; fi
+          # libgdraw*.dll.a      -> libgdraw.a
+          GD=$(ls /mingw64/lib/libgdraw*.dll.a 2>/dev/null | head -n1)
+          if [ -n "$GD" ]; then cp -u "$GD" "$ROOTDIR/fontforge/build/lib/libgdraw.a"; fi
+          # always include these two if present
+          [ -f /mingw64/lib/libuninameslist.dll.a ] && \
+            cp -u /mingw64/lib/libuninameslist.dll.a "$ROOTDIR/fontforge/build/lib/libuninameslist.a"
+          [ -f /mingw64/lib/libspiro.dll.a ] && \
+            cp -u /mingw64/lib/libspiro.dll.a "$ROOTDIR/fontforge/build/lib/libspiro.a"
 
           echo "=== Vendored shim tree ==="
-          ls -R "$ROOTDIR"/poppler "$ROOTDIR"/fontforge 2>/dev/null || true
+          ls -R "$ROOTDIR"/fontforge "$ROOTDIR"/poppler 2>/dev/null || true
 
       - name: Build (Plan A)
         shell: msys2 {0}
@@ -133,6 +139,8 @@ jobs:
               -DENABLE_QT5=OFF \
               -DENABLE_QT6=OFF \
               -DENABLE_NSS3=OFF \
+              -DNSS3_FOUND=OFF \
+              -DWITH_NSS3=OFF \
               -DENABLE_GTK_DOC=OFF
             if cmake --build . --parallel; then
               test -f glib/libpoppler-glib.a || { echo "libpoppler-glib.a missing"; exit 2; }
