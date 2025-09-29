@@ -1,122 +1,65 @@
-name: win64-pdf2htmlEX
+name: Build pdf2htmlEX Windows
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  build-win64:
+  build:
     runs-on: windows-latest
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      
+    - name: Set up MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-poppler
+          mingw-w64-x86_64-cairo
+          mingw-w64-x86_64-freetype
+          mingw-w64-x86_64-pkg-config
+          mingw-w64-x86_64-libssh2
+          make
+          git
 
-      - name: Setup MSYS2 (MINGW64)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            base-devel git cmake ninja zip
-            mingw-w64-x86_64-toolchain mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-poppler mingw-w64-x86_64-poppler-data
-            mingw-w64-x86_64-cairo mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-libpng mingw-w64-x86_64-libjpeg-turbo
-            mingw-w64-x86_64-libxml2 mingw-w64-x86_64-icu
-            mingw-w64-x86_64-glib2 mingw-w64-x86_64-openjpeg2
-            mingw-w64-x86_64-lcms2 mingw-w64-x86_64-harfbuzz
-            mingw-w64-x86_64-fribidi mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-fontforge mingw-w64-x86_64-libspiro
-            mingw-w64-x86_64-ntldd-git mingw-w64-x86_64-gendef
-          path-type: minimal
-          cache: true
+    - name: Build pdf2htmlEX
+      shell: msys2 {0}
+      run: |
+        # Create build directory
+        mkdir build
+        cd build
+        
+        # Configure with CMake
+        cmake .. \
+          -G "MSYS Makefiles" \
+          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install" \
+          -DENABLE_TESTING=OFF
+        
+        # Build
+        make -j$(nproc)
+        
+        # Install to specified directory
+        make install
 
-      - name: Fetch pdf2htmlEX sources
-        shell: msys2 {0}
-        run: |
-          set -e
-          git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git source
-          if [ -f source/CMakeLists.txt ]; then
-            echo "SRCDIR=$PWD/source" >> $GITHUB_ENV
-          elif [ -f source/pdf2htmlEX/CMakeLists.txt ]; then
-            echo "SRCDIR=$PWD/source/pdf2htmlEX" >> $GITHUB_ENV
-          else
-            echo "::error ::CMakeLists.txt not found in cloned repo"; exit 1
-          fi
+    - name: Package artifacts
+      run: |
+        # Create dist directory
+        mkdir dist
+        # Copy executable and required DLLs
+        copy install\bin\pdf2htmlEX.exe dist\
+        # Add any additional DLL dependencies here if needed
+      shell: cmd
 
-      - name: Patch CMake minimum versions (to 3.5)
-        shell: msys2 {0}
-        run: |
-          set -e
-          find "$SRCDIR" -name CMakeLists.txt -print \
-            -exec sed -i -E 's/cmake_minimum_required\s*\(\s*VERSION\s*[0-9.]+\)/cmake_minimum_required(VERSION 3.5)/g' {} +
-
-      - name: Synthesize FontForge import library if missing
-        shell: msys2 {0}
-        run: |
-          set -e
-          if [ ! -f /mingw64/lib/libfontforge.dll.a ]; then
-            echo "libfontforge.dll.a missing, attempting to synthesize from DLL"
-            if [ -f /mingw64/bin/libfontforge-*.dll ]; then
-              DLLFILE=$(ls /mingw64/bin/libfontforge-*.dll | head -n 1)
-              gendef "$DLLFILE"
-              DEF=$(echo "$DLLFILE" | sed 's/\.dll$/.def/')
-              dlltool -d "$DEF" -l /mingw64/lib/libfontforge.dll.a
-              rm -f "$DEF"
-              echo "Synthesized libfontforge.dll.a from $DLLFILE"
-            else
-              echo "::error ::FontForge DLL not found, cannot synthesize import library!"; exit 1
-            fi
-          fi
-          if [ ! -f /mingw64/lib/libfontforge.dll.a ]; then
-            echo "::error ::FontForge import library (libfontforge.dll.a) still not found!"; exit 1
-          fi
-
-      - name: Configure
-        shell: msys2 {0}
-        env:
-          PKG_CONFIG_EXECUTABLE: /mingw64/bin/pkg-config
-          PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
-        run: |
-          set -e
-          cmake -S "$SRCDIR" -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64 \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-
-      - name: Build
-        shell: msys2 {0}
-        run: |
-          set -e
-          cmake --build build --parallel
-          EXE=""
-          [ -f build/pdf2htmlEX.exe ] && EXE="build/pdf2htmlEX.exe"
-          [ -z "$EXE" ] && [ -f build/src/pdf2htmlEX.exe ] && EXE="build/src/pdf2htmlEX.exe"
-          [ -z "$EXE" ] && { echo "::error ::pdf2htmlEX.exe not found after build"; ls -R build; exit 1; }
-          strip "$EXE" || true
-          echo "EXE=$EXE" >> $GITHUB_ENV
-
-      - name: Bundle DLLs (portable dist)
-        shell: msys2 {0}
-        run: |
-          set -e
-          test -n "$EXE" || { echo "::error ::EXE path missing"; exit 1; }
-          mkdir -p dist
-          cp "$EXE" dist/
-          ntldd -R dist/pdf2htmlEX.exe | awk '/=>/ {print $3}' | tr -d '\r' | sort -u | while read f; do
-            [ -f "$f" ] && cp -u "$f" dist/ || true
-          done
-          if [ -d /mingw64/share/poppler ]; then
-            mkdir -p dist/share
-            cp -r /mingw64/share/poppler dist/share/
-          fi
-          ls -l dist/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pdf2htmlEX-win64-portable
-          path: dist/**
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: pdf2htmlEX-windows-x64
+        path: dist/
