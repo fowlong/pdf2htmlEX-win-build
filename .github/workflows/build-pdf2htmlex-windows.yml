@@ -3,7 +3,7 @@ name: build-pdf2htmlEX-windows
 on:
   push:
     branches: [ main ]
-  pull_request:
+  pull_request: {}
 
 jobs:
   build:
@@ -16,25 +16,24 @@ jobs:
       - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
-          update: true
           msystem: MINGW64
+          update: true
+          cache: true
           install: >-
             base-devel
             git
             curl
-            unzip
             wget
+            unzip
             tar
             patch
-            cmake
-            ninja
-            pkgconf
-            # runtime/build deps used by poppler/pdf2htmlEX
             mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkg-config
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-fontconfig
-            mingw-w64-x86_64-glib2
             mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-libpng
             mingw-w64-x86_64-libjpeg-turbo
@@ -42,18 +41,19 @@ jobs:
             mingw-w64-x86_64-libtiff
             mingw-w64-x86_64-lcms2
             mingw-w64-x86_64-libxml2
+            mingw-w64-x86_64-glib2
             mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-libcurl
+            mingw-w64-x86_64-curl
             mingw-w64-x86_64-fontforge
+            mingw-w64-x86_64-ntldd
 
       - name: Build all (MSYS2 bash)
         shell: msys2 {0}
-        run: |
-          set -euxo pipefail
-          bash ./scripts/build-msys2.sh
+        run: bash ./scripts/build-msys2.sh
 
       - name: Upload artifact (portable zip)
         uses: actions/upload-artifact@v4
         with:
           name: pdf2htmlEX-windows-portable
-          path: dist/*
+          path: dist/pdf2htmlEX-windows-portable.zip
+          if-no-files-found: error
