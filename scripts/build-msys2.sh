@@ -1,127 +1,109 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# Workspace
+# Toolchain & paths
+export PATH=/mingw64/bin:/usr/bin:$PATH
+export CC=/mingw64/bin/gcc.exe
+export CXX=/mingw64/bin/g++.exe
+export RC=/mingw64/bin/windres.exe
+export PKG_CONFIG=/mingw64/bin/pkg-config
+export CMAKE_GENERATOR="Ninja"
+export CMAKE_MAKE_PROGRAM=/mingw64/bin/ninja.exe
+export CMAKE_BUILD_PARALLEL_LEVEL=4
+
 ROOT="$(pwd)"
 BUILD="$ROOT/.build"
 DIST="$ROOT/dist"
-mkdir -p "$BUILD" "$DIST"
+STAGE="$ROOT/stage"
+mkdir -p "$BUILD" "$DIST" "$STAGE"
 
-# Versions locked to what is known to build together.
-# pdf2htmlEX v0.18.8.rc1 pairs with poppler 0.89.0.
-POPLER_VER="poppler-0.89.0"
-POPLER_URL="https://poppler.freedesktop.org/${POPLER_VER}.tar.xz"
-PDF2_VER_TAG="v0.18.8.rc1"
-PDF2_REPO="https://github.com/pdf2htmlEX/pdf2htmlEX.git"
+echo "=== versions ==="
+cmake --version
+ninja --version
+$CC --version | head -1
+pkg-config --version
 
-# ---------- 1) Build static Poppler 0.89.0 ----------
+# ------------------- 1) Build static Poppler (21.06.1, GLib ON) ----------------
+POPLER_VER="21.06.1"
+POPLER_TARBALL="poppler-${POPLER_VER}.tar.xz"
+POPLER_URL="https://poppler.freedesktop.org/${POPLER_TARBALL}"
+
 cd "$BUILD"
-if [ ! -d "$POPLER_VER" ]; then
-  curl -L "$POPLER_URL" -o "${POPLER_VER}.tar.xz"
-  tar xJf "${POPLER_VER}.tar.xz"
-fi
+[ -d "poppler-${POPLER_VER}" ] || { curl -L "$POPLER_URL" -o "$POPLER_TARBALL"; tar -xf "$POPLER_TARBALL"; }
 
-mkdir -p poppler-build
-cmake -S "$POPLER_VER" -B poppler-build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/mingw64 \
-  -DCMAKE_PREFIX_PATH=/mingw64 \
+cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
+  -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
+  -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/mingw64 \
   -DBUILD_SHARED_LIBS=OFF \
   -DENABLE_UNSTABLE_API_ABI_HEADERS=ON \
-  -DENABLE_CPP=OFF \
-  -DENABLE_UTILS=OFF \
+  -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF \
   -DENABLE_GLIB=ON \
-  -DENABLE_QT5=OFF \
-  -DENABLE_QT6=OFF \
-  -DWITH_NSS3=OFF \
-  -DTESTDATADIR=""
+  -DENABLE_CPP=ON \
+  -DENABLE_QT5=OFF -DENABLE_QT6=OFF
 
-cmake --build poppler-build --parallel
-cmake --install poppler-build
+cmake --build "poppler-${POPLER_VER}/build" --parallel
+cmake --install "poppler-${POPLER_VER}/build"
 
-# ---------- 2) Clone pdf2htmlEX sources ----------
-if [ ! -d "pdf2htmlEX-src" ]; then
-  git clone --depth 1 --branch "$PDF2_VER_TAG" "$PDF2_REPO" pdf2htmlEX-src
+# Paths to the static libs we just built
+POP_BUILD="poppler-${POPLER_VER}/build"
+LIB_POPPLER="$BUILD/$POP_BUILD/poppler/libpoppler.a"
+LIB_POPPLER_GLIB="$BUILD/$POP_BUILD/glib/libpoppler-glib.a"
+LIB_POPPLER_CPP="$BUILD/$POP_BUILD/cpp/libpoppler-cpp.a"
+
+# ------------------- 2) Get pdf2htmlEX sources ---------------------------------
+PDF2_DIR="$BUILD/pdf2htmlEX-src"
+if [ ! -d "$PDF2_DIR" ]; then
+  git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git "$PDF2_DIR"
 fi
 
-# pdf2htmlEX places top-level CMakeLists.txt in subdir 'pdf2htmlEX'
-PDF2_DIR="pdf2htmlEX-src/pdf2htmlEX"
-
-# Some CMake versions complain unless min version is at the top;
-# ensure it's compatible with our runner (3.5+ is OK).
-# Also keep tests happy even though we won't run them.
-if [ ! -f "$PDF2_DIR/test/test.py.in" ]; then
-  mkdir -p "$PDF2_DIR/test"
-  cat > "$PDF2_DIR/test/test.py.in" <<'PY'
-#!/usr/bin/env python3
-print("noop test stub")
-PY
+# Repo sometimes nests the project in ./pdf2htmlEX/
+if [ -f "$PDF2_DIR/CMakeLists.txt" ]; then
+  PDF2_SRC="$PDF2_DIR"
+else
+  PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 fi
 
-# ---------- 3) Make Poppler static libs available where pdf2htmlEX expects ----------
-# pdf2htmlEX historically looks under ../poppler/build/{poppler,glib}
-# Mirror that layout and copy the freshly built static libs there.
-LOCAL_POPPLER_ROOT="$PDF2_DIR/../poppler/build"
-mkdir -p "$LOCAL_POPPLER_ROOT/poppler" "$LOCAL_POPPLER_ROOT/glib"
+# Make the path layout that its CMake expects:
+#   ../poppler/build/{poppler,glib,cpp}/libpoppler*.a
+LOCAL_POP="$PDF2_SRC/../poppler/build"
+mkdir -p "$LOCAL_POP/poppler" "$LOCAL_POP/glib" "$LOCAL_POP/cpp"
+cp -f "$LIB_POPPLER"      "$LOCAL_POP/poppler/"    # libpoppler.a
+cp -f "$LIB_POPPLER_GLIB" "$LOCAL_POP/glib/"       # libpoppler-glib.a
+[ -f "$LIB_POPPLER_CPP" ] && cp -f "$LIB_POPPLER_CPP" "$LOCAL_POP/cpp/" || true
 
-# copy core & glib static libs from our poppler build tree
-# (Ninja puts them under these subdirs in the build tree)
-cp -f "$BUILD/poppler-build/poppler/libpoppler.a"      "$LOCAL_POPPLER_ROOT/poppler/" || true
-cp -f "$BUILD/poppler-build/glib/libpoppler-glib.a"    "$LOCAL_POPPLER_ROOT/glib/"    || true
+# Some branches expect a test template; drop a stub to keep configure happy
+if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
+  mkdir -p "$PDF2_SRC/test"
+  cat > "$PDF2_SRC/test/test.py.in" <<'EOF'
+#!/usr/bin/env @PYTHON@
+print("tests disabled in CI")
+EOF
+fi
 
-# Sanity check – fail early if static archives are missing
-test -f "$LOCAL_POPPLER_ROOT/poppler/libpoppler.a"
-test -f "$LOCAL_POPPLER_ROOT/glib/libpoppler-glib.a"
+# Normalize minimum CMake (avoid policy nags)
+find "$PDF2_SRC" -name CMakeLists.txt -print0 | \
+  xargs -0 -I{} sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' {}
 
-# ---------- 4) Configure & build pdf2htmlEX ----------
-mkdir -p "$PDF2_DIR/build"
-
-# Patch CMake minimum version inside subproject if needed (be tolerant)
-# This avoids the "CMake < 3.5 removed policy" errors on Actions.
-sed -i -E '1,/^project\(/ s/^([[:space:]]*)cmake_minimum_required\(.*\)$/cmake_minimum_required(VERSION 3.5)/I' \
-  "$PDF2_DIR/CMakeLists.txt" || true
-
-cmake -S "$PDF2_DIR" -B "$PDF2_DIR/build" -G Ninja \
-  -DCMAKE_MAKE_PROGRAM=/mingw64/bin/ninja.exe \
-  -DCMAKE_C_COMPILER=/mingw64/bin/gcc.exe \
-  -DCMAKE_CXX_COMPILER=/mingw64/bin/g++.exe \
-  -DCMAKE_RC_COMPILER=/mingw64/bin/windres.exe \
+# ------------------- 3) Configure & build pdf2htmlEX ---------------------------
+cmake -S "$PDF2_SRC" -B "$PDF2_SRC/build" \
+  -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
+  -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/mingw64 \
-  -DCMAKE_INSTALL_PREFIX=/mingw64
+  -DCMAKE_PREFIX_PATH=/mingw64 -DCMAKE_INSTALL_PREFIX=/mingw64
 
-cmake --build "$PDF2_DIR/build" --parallel
+cmake --build "$PDF2_SRC/build" --parallel
 
-# ---------- 5) Stage a minimal portable bundle ----------
-EXE="$PDF2_DIR/build/pdf2htmlEX.exe"
-cp -f "$EXE" "$DIST/"
+# ------------------- 4) Stage a portable bundle --------------------------------
+EXE="$PDF2_SRC/build/pdf2htmlEX.exe"
+cp -f "$EXE" "$STAGE/"
 
-# Pull in the DLLs pdf2htmlEX needs at runtime (cairo, glib, freetype, etc.)
-# Note: This makes a "fat" portable folder so users can run the exe standalone.
-need () { pacman -Ql "$1" | awk '/\/bin\/[^/]+\.dll$/ {print $2}'; }
+# Use ntldd to pull in runtime DLLs next to the exe
+ntldd -R "$STAGE/pdf2htmlEX.exe" \
+  | awk '/=>/ {print $3}' \
+  | sed 's#\\#/#g' | sort -u \
+  | while read -r dll; do [ -f "$dll" ] && cp -n "$dll" "$STAGE/" || true; done
 
-DLLS=()
-DLLS+=($(need mingw-w64-x86_64-glib2))
-DLLS+=($(need mingw-w64-x86_64-cairo))
-DLLS+=($(need mingw-w64-x86_64-freetype))
-DLLS+=($(need mingw-w64-x86_64-fontconfig))
-DLLS+=($(need mingw-w64-x86_64-libpng))
-DLLS+=($(need mingw-w64-x86_64-libjpeg-turbo))
-DLLS+=($(need mingw-w64-x86_64-libtiff))
-DLLS+=($(need mingw-w64-x86_64-openjpeg2))
-DLLS+=($(need mingw-w64-x86_64-lcms2))
-DLLS+=($(need mingw-w64-x86_64-libxml2))
-DLLS+=($(need mingw-w64-x86_64-zlib))
-DLLS+=($(need mingw-w64-x86_64-harfbuzz))
-DLLS+=($(need mingw-w64-x86_64-libcurl))
-
-for f in "${DLLS[@]}"; do
-  [ -f "$f" ] && cp -n "$f" "$DIST/" || true
-done
-
-# Poppler is statically linked; but if anything dynamic slips through, add its DLLs too (defensive).
-if ls /mingw64/bin/libpoppler*.dll >/dev/null 2>&1; then
-  cp -n /mingw64/bin/libpoppler*.dll "$DIST/" || true
-fi
-
-echo "Done. Artifact staged in: $DIST"
+mkdir -p "$DIST"
+(cd "$STAGE/.." && zip -r "$DIST/pdf2htmlEX-windows-portable.zip" "$(basename "$STAGE")")
+echo "OK -> $DIST/pdf2htmlEX-windows-portable.zip"
