@@ -42,13 +42,13 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DENABLE_CPP=ON \
   -DENABLE_QT5=OFF -DENABLE_QT6=OFF \
   -DENABLE_BOOST=OFF \
-  -DENABLE_NSS3=OFF \
-  -DTESTDATADIR=""
+  -DENABLE_NSS3=OFF
+  # NOTE: do NOT set -DTESTDATADIR. Let Poppler detect/miss it gracefully.
 
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# static libs we need (from build tree)
+# static libs from the build tree
 POP_BUILD="poppler-${POPLER_VER}/build"
 LIB_POPPLER="$BUILD/$POP_BUILD/poppler/libpoppler.a"
 LIB_POPPLER_GLIB="$BUILD/$POP_BUILD/glib/libpoppler-glib.a"
@@ -62,7 +62,7 @@ fi
 PDF2_SRC="$PDF2_DIR"
 [ -f "$PDF2_SRC/CMakeLists.txt" ] || PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 
-# ensure expected vendor layout: ../poppler/build/{poppler,glib,cpp}
+# expected vendor layout: ../poppler/build/{poppler,glib,cpp}
 VENDOR_POP="$PDF2_SRC/../poppler/build"
 mkdir -p "$VENDOR_POP/poppler" "$VENDOR_POP/glib" "$VENDOR_POP/cpp"
 cp -f "$LIB_POPPLER"       "$VENDOR_POP/poppler/"
