@@ -19,13 +19,13 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          # IMPORTANT: package names ONLY; no comments here
+          # NOTE: package names ONLY; no comments
           install: >-
             base-devel
             git
             curl
             zip
-            cmake
+            mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cairo
@@ -46,6 +46,8 @@ jobs:
             mingw-w64-x86_64-libspiro
             mingw-w64-x86_64-poppler-data
             mingw-w64-x86_64-ntldd
+            mingw-w64-x86_64-fontforge
+            mingw-w64-x86_64-libuninameslist
           cache: true
 
       - name: Build (MSYS2 bash)
