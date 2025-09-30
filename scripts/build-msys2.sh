@@ -8,9 +8,8 @@ export CXX=/mingw64/bin/g++.exe
 export RC=/mingw64/bin/windres.exe
 export CMAKE_GENERATOR="Ninja"
 export CMAKE_MAKE_PROGRAM=/mingw64/bin/ninja.exe
-
-# Ensure CMake sees these (we also pass them explicitly below)
-export CXXFLAGS="${CXXFLAGS:-} -O2 -DNDEBUG"
+# make warnings non-fatal for Poppler API drift
+export CXXFLAGS="${CXXFLAGS:-} -O2 -DNDEBUG -Wno-overloaded-virtual"
 
 # -------- deps --------
 pacman -Syu --noconfirm
@@ -45,28 +44,19 @@ mkdir -p "$VENDOR_POP_ROOT" "$VENDOR_POP_SUB" "$VENDOR_GLIB_SUB" "$VENDOR_CPP_SU
 copy_lib_as_a () { # $1=basename $2=destdir
   local base="$1" dest="$2"
   mkdir -p "$dest"
-  if [ -f "/mingw64/lib/lib${base}.a" ]; then
-    cp -f "/mingw64/lib/lib${base}.a"     "$dest/lib${base}.a"
-  elif [ -f "/mingw64/lib/lib${base}.dll.a" ]; then
-    cp -f "/mingw64/lib/lib${base}.dll.a" "$dest/lib${base}.a"
-  else
-    echo "ERROR: lib${base}{.a,.dll.a} missing in /mingw64/lib" >&2
-    exit 1
-  fi
+  if   [ -f "/mingw64/lib/lib${base}.a"     ]; then cp -f "/mingw64/lib/lib${base}.a"     "$dest/lib${base}.a"
+  elif [ -f "/mingw64/lib/lib${base}.dll.a" ]; then cp -f "/mingw64/lib/lib${base}.dll.a" "$dest/lib${base}.a"
+  else echo "ERROR: lib${base}{.a,.dll.a} missing"; exit 1; fi
 }
 
-# libs where pdf2htmlEX expects them
 copy_lib_as_a poppler      "$VENDOR_POP_ROOT"
 copy_lib_as_a poppler      "$VENDOR_POP_SUB"
 copy_lib_as_a poppler-glib "$VENDOR_GLIB_SUB"
 copy_lib_as_a poppler-cpp  "$VENDOR_CPP_SUB"
 
-# headers: copy the whole poppler include tree into vendor/poppler/
-# (this gives us GlobalParams.h, OutputDev.h, goo/, fofi/, splash/, etc.)
+# headers: mirror the full poppler tree where pdf2htmlEX expects it
 VENDOR_POP_HDR="$PDF2_SRC/../poppler/poppler"
-mkdir -p "$VENDOR_POP_HDR"
-# clean & copy to avoid stale files
-rm -rf "$VENDOR_POP_HDR"/*
+rm -rf "$VENDOR_POP_HDR"; mkdir -p "$VENDOR_POP_HDR"
 cp -r /mingw64/include/poppler/* "$VENDOR_POP_HDR/"
 
 # -------- FontForge import libs (synthesize if needed) --------
@@ -86,44 +76,74 @@ synth_from_dll () { # $1=basename $2=out.a
 }
 
 for L in fontforge gutils gunicode uninameslist; do
-  if [ -f "/mingw64/lib/lib${L}.a" ]; then
-    cp -f "/mingw64/lib/lib${L}.a" "$VENDOR_FF_LIB/"
-  elif [ -f "/mingw64/lib/lib${L}.dll.a" ]; then
-    cp -f "/mingw64/lib/lib${L}.dll.a" "$VENDOR_FF_LIB/lib${L}.a"
-  else
-    synth_from_dll "$L" "$VENDOR_FF_LIB/lib${L}.a"
+  if   [ -f "/mingw64/lib/lib${L}.a"     ]; then cp -f "/mingw64/lib/lib${L}.a"     "$VENDOR_FF_LIB/"
+  elif [ -f "/mingw64/lib/lib${L}.dll.a" ]; then cp -f "/mingw64/lib/lib${L}.dll.a" "$VENDOR_FF_LIB/lib${L}.a"
+  else synth_from_dll "$L" "$VENDOR_FF_LIB/lib${L}.a"
   fi
 done
 
-# -------- small source shims --------
+# -------- patches/shims --------
 # normalize cmake minimums
 find "$PDF2_SRC" -name CMakeLists.txt -print0 | xargs -0 -I{} \
   sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' {}
 
-# ensure <optional> (for std::optional usages)
+# header/source: ensure <optional>
 for f in "$PDF2_SRC/src/pdf2htmlEX.cc" "$PDF2_SRC/src/HTMLRenderer/font.cc"; do
   [ -f "$f" ] && ! grep -q '^#include <optional>' "$f" && sed -i '1i #include <optional>' "$f" || true
 done
 
-# fix signature mismatch (MSYS2 poppler expects pointer)
+# fix CairoFontEngine::getFont signature (GfxFont* expected)
 if [ -f "$PDF2_SRC/src/HTMLRenderer/font.cc" ]; then
   sed -i -E 's/getFont\s*\(\s*std::shared_ptr<\s*GfxFont\s*>\s*\(\s*font\s*\)\s*,/getFont(font,/' \
     "$PDF2_SRC/src/HTMLRenderer/font.cc" || true
 fi
 
-# make unique_ptr direct-initialization so FoFiTrueType::load works in if-init
+# fix unique_ptr direct-init for FoFiTrueType::load
 if [ -f "$PDF2_SRC/src/HTMLRenderer/font.cc" ]; then
   sed -i 's/if(std::unique_ptr<FoFiTrueType> fftt = FoFiTrueType::load(/if(std::unique_ptr<FoFiTrueType> fftt(FoFiTrueType::load(/g' \
     "$PDF2_SRC/src/HTMLRenderer/font.cc" || true
 fi
 
-# replace value_or("") on GooString* with a safe ternary
+# fix getName().value_or("") (GooString* on Poppler)
 if [ -f "$PDF2_SRC/src/HTMLRenderer/font.cc" ]; then
   sed -i -E 's/font->getName\(\)\.value_or\(\s*""\s*\)/std::string(font->getName() ? font->getName()->c_str() : "")/g' \
     "$PDF2_SRC/src/HTMLRenderer/font.cc" || true
 fi
 
-# make sure tests placeholder exists if upstream doesn’t ship it
+# --- Poppler >= 24.x beginTransparencyGroup(std::array<...>) compat ---
+HDR="$PDF2_SRC/src/HTMLRenderer/HTMLRenderer.h"
+if [ -f "$HDR" ]; then
+  # include <array> once
+  grep -q '<array>' "$HDR" || sed -i '1i #include <array>' "$HDR"
+  # expose base overloads to avoid hiding warnings
+  awk '
+  /class[ \t]+HTMLRenderer/ {in=1}
+  in && /public:/ && !done { print; print "    using OutputDev::beginTransparencyGroup;"; done=1; next }
+  { print }' "$HDR" > "$HDR.tmp" && mv "$HDR.tmp" "$HDR"
+  # add declaration for the new std::array overload if missing
+  grep -q 'beginTransparencyGroup\s*(GfxState \*state, const std::array<double, 4>&' "$HDR" || \
+    sed -i '/beginTransparencyGroup\s*(GfxState[^\n]*const double \*/a \ \ \ \ virtual void beginTransparencyGroup(GfxState *state, const std::array<double, 4>& bbox, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool forSoftMask);\n' "$HDR" || true
+fi
+
+SRC_DRAW="$PDF2_SRC/src/HTMLRenderer/draw.cc"
+if [ -f "$SRC_DRAW" ]; then
+  grep -q 'beginTransparencyGroup(GfxState \*state, const std::array<double, 4>&' "$SRC_DRAW" || cat >> "$SRC_DRAW" <<'EOF'
+
+// ---- Poppler >= 24.x bbox adapter (forward to the legacy pointer overload) ----
+#include <array>
+namespace pdf2htmlEX {
+void HTMLRenderer::beginTransparencyGroup(GfxState *state,
+                                          const std::array<double, 4>& bbox,
+                                          GfxColorSpace *blendingColorSpace,
+                                          bool isolated, bool knockout, bool forSoftMask) {
+    double b[4] = {bbox[0], bbox[1], bbox[2], bbox[3]};
+    this->beginTransparencyGroup(state, b, blendingColorSpace, isolated, knockout, forSoftMask);
+}
+} // namespace pdf2htmlEX
+EOF
+fi
+
+# placeholder tests if upstream omitted them
 [ -f "$PDF2_SRC/test/test.py.in" ] || { mkdir -p "$PDF2_SRC/test"; printf '#!/usr/bin/env @PYTHON@\nprint("tests disabled")\n' > "$PDF2_SRC/test/test.py.in"; }
 
 # -------- configure & build --------
@@ -137,15 +157,5 @@ cmake -S "$PDF2_SRC" -B "$PDF2_SRC/build" \
   -DCMAKE_PREFIX_PATH=/mingw64 \
   -DCMAKE_INSTALL_PREFIX=/mingw64 \
   -DCMAKE_CXX_FLAGS="$CXXFLAGS -I/mingw64/include/poppler"
-
-echo "== headers now in =="
-ls -al "$VENDOR_POP_HDR" | head -n 50 || true
-
-echo "== vendored libs =="
-ls -l "$VENDOR_POP_ROOT" || true
-ls -l "$VENDOR_POP_SUB"  || true
-ls -l "$VENDOR_GLIB_SUB" || true
-ls -l "$VENDOR_CPP_SUB"  || true
-ls -l "$VENDOR_FF_LIB"   || true
 
 cmake --build "$PDF2_SRC/build" --parallel
