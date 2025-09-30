@@ -27,21 +27,15 @@ $CC --version | head -1
 pkg-config --version
 
 # -------------------------------------------------------------------
-# Ensure MSYS2 deps that we vendor or use to synthesize import libs
+# Ensure tools/libs we need (NO comments after \, and correct pkg names)
 # -------------------------------------------------------------------
 pacman -Sy --noconfirm
-pacman -S  --noconfirm --needed \
+pacman -S --noconfirm --needed \
   mingw-w64-x86_64-fontforge \
   mingw-w64-x86_64-libuninameslist \
-  mingw-w64-x86_64-binutils \        # dlltool
-  mingw-w64-x86_64-tools \           # gendef
-  mingw-w64-x86_64-ntldd || true
-
-# quick visibility (ignore errors if absent)
-ls -1 /mingw64/lib/libfontforge* 2>/dev/null || true
-ls -1 /mingw64/lib/libgutils*     2>/dev/null || true
-ls -1 /mingw64/lib/libgunicode*   2>/dev/null || true
-ls -1 /mingw64/lib/libuninameslist* 2>/dev/null || true
+  mingw-w64-x86_64-binutils \
+  mingw-w64-x86_64-ntldd \
+  mingw-w64-tools || true
 
 # -------------------------------------------------------------------
 # 1) Poppler 21.06.1
@@ -68,15 +62,12 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
 
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
-
 POP_BUILD="poppler-${POPLER_VER}/build"
 
 # -------------------------------------------------------------------
-# helper: locate a lib (supports versioned names and several roots)
-# prints first hit
+# helpers
 # -------------------------------------------------------------------
 find_lib_glob() {
-  # $1 = build-subdir (may be empty), $2 = base (e.g. poppler-glib | fontforge)
   local sub="$1" base="$2"
   local root="$BUILD/$POP_BUILD"
   local hits=()
@@ -94,7 +85,6 @@ find_lib_glob() {
   done
   ((${#hits[@]})) && { printf '%s\n' "${hits[0]}"; return 0; }
 
-  # fallback: scan the package file list (useful when paths shift)
   if pacman -Qi mingw-w64-x86_64-fontforge >/dev/null 2>&1; then
     while IFS= read -r p; do
       case "$p" in
@@ -107,29 +97,21 @@ find_lib_glob() {
   return 1
 }
 
-# Synthesize an import lib from a DLL if needed
 synth_import_from_dll() {
-  # $1 base (fontforge|gutils|gunicode|uninameslist)
-  # $2 output full path to .a
   local base="$1" out="$2"
   local dll=""
-  # try common dll names
   for pat in "/mingw64/bin/lib${base}-"*.dll "/mingw64/bin/lib${base}.dll"; do
-    for f in $pat; do
-      [ -f "$f" ] && { dll="$f"; break; }
-    done
-    [ -n "${dll}" ] && break
+    for f in $pat; do [ -f "$f" ] && { dll="$f"; break; }; done
+    [ -n "$dll" ] && break
   done
-  [ -z "${dll}" ] && { echo "ERROR: No DLL found for ${base}" >&2; return 1; }
+  [ -z "$dll" ] && { echo "ERROR: No DLL found for ${base}" >&2; return 1; }
 
   local tmp; tmp="$(mktemp -d)"
   (
     set -e
     cd "$tmp"
-    echo "Synthesizing import lib for ${base} from $(basename "$dll")"
-    gendef "$dll"                     # produces *.def
-    local def=( *.def )
-    dlltool -d "${def[0]}" -l "$out" # create .a
+    gendef "$dll"
+    dlltool -d *.def -l "$out"
   )
   rm -rf "$tmp"
 }
@@ -143,7 +125,6 @@ PDF2_DIR="$BUILD/pdf2htmlEX-src"
 PDF2_SRC="$PDF2_DIR"
 [ -f "$PDF2_SRC/CMakeLists.txt" ] || PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 
-# ---- Vendor Poppler layout
 VENDOR_POP_ROOT="$PDF2_SRC/../poppler/build"
 VENDOR_POP_SUB="$VENDOR_POP_ROOT/poppler"
 VENDOR_GLIB_SUB="$VENDOR_POP_ROOT/glib"
@@ -160,32 +141,28 @@ cp -f "$GLIB_SRC" "$VENDOR_GLIB_SUB/libpoppler-glib.a"
 cp -f "$GLIB_SRC" "$VENDOR_POP_ROOT/libpoppler-glib.a"
 [ -n "${CPP_SRC:-}" ] && { cp -f "$CPP_SRC" "$VENDOR_CPP_SUB/libpoppler-cpp.a"; cp -f "$CPP_SRC" "$VENDOR_POP_ROOT/libpoppler-cpp.a"; }
 
-# ---- Vendor FontForge layout expected by pdf2htmlEX
 VENDOR_FF_LIB="$PDF2_SRC/../fontforge/build/lib"
 mkdir -p "$VENDOR_FF_LIB"
 
 ensure_ff_import() {
   local base="$1" out="$2"
   if src="$(find_lib_glob "" "$base")"; then
-    echo "Using existing import lib: $src -> $out"
     cp -f "$src" "$out"
   else
-    # Make one from the shipped DLL
     synth_import_from_dll "$base" "$out"
   fi
 }
 
-ensure_ff_import fontforge    "$VENDOR_FF_LIB/libfontforge.a"
-ensure_ff_import gutils       "$VENDOR_FF_LIB/libgutils.a"
-ensure_ff_import gunicode     "$VENDOR_FF_LIB/libgunicode.a"
-# Usually present; synthesize if missing:
+ensure_ff_import fontforge   "$VENDOR_FF_LIB/libfontforge.a"
+ensure_ff_import gutils      "$VENDOR_FF_LIB/libgutils.a"
+ensure_ff_import gunicode    "$VENDOR_FF_LIB/libgunicode.a"
 if src="$(find_lib_glob "" "uninameslist")"; then
   cp -f "$src" "$VENDOR_FF_LIB/libuninameslist.a"
 else
   synth_import_from_dll "uninameslist" "$VENDOR_FF_LIB/libuninameslist.a" || true
 fi
 
-# ---- CMake normalize + tests stub --------------------------------------------
+# tests stub + cmake normalize
 if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
   mkdir -p "$PDF2_SRC/test"
   printf '%s\n' '#!/usr/bin/env @PYTHON@' 'print("tests disabled")' > "$PDF2_SRC/test/test.py.in"
@@ -205,7 +182,7 @@ cmake -S "$PDF2_SRC" -B "$PDF2_SRC/build" \
 cmake --build "$PDF2_SRC/build" --parallel
 
 # -------------------------------------------------------------------
-# 4) Package portable zip
+# 4) Package
 # -------------------------------------------------------------------
 cp -f "$PDF2_SRC/build/pdf2htmlEX.exe" "$STAGE/"
 ntldd -R "$STAGE/pdf2htmlEX.exe" | awk '/=>/ {print $3}' | sed 's#\\#/#g' | sort -u \
