@@ -27,7 +27,7 @@ BUILD="$ROOT/.build"
 STAGE="$ROOT/stage"
 DIST="$ROOT/dist"
 
-POPLER_VER="0.89.0"      # known-good for pdf2htmlEX v0.18.8.rc1
+POPLER_VER="0.89.0"      # good with pdf2htmlEX v0.18.8.rc1
 PDF2_TAG="v0.18.8.rc1"
 
 mkdir -p "$BUILD" "$STAGE" "$DIST"
@@ -51,11 +51,12 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DENABLE_UNSTABLE_API_ABI_HEADERS=ON \
   -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF \
   -DENABLE_GLIB=ON \
-  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF
+  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# Verify poppler-glib is visible
+# Confirm poppler-glib is visible
 pkg-config --modversion poppler-glib
 
 # ---------- pdf2htmlEX (release tag) ------------------------------------------
@@ -81,15 +82,13 @@ else
   exit 1
 fi
 
-# ---- Patch legacy cmake_minimum_required to avoid 3.5 gate -------------------
-# (Apply to all nested CMakeLists.txt so subdirs don't trip the error.)
+# Patch ALL CMakeLists to cmake_minimum_required(VERSION 3.5)
 while IFS= read -r -d '' f; do
-  sed -i -E 's/cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' "$f"
+  sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' "$f"
 done < <(find "$PDF2_SRC" -name CMakeLists.txt -print0)
 
-# ---- Disable tests + provide a stub if template is missing -------------------
+# Disable tests + provide stub if template is missing
 if [ ! -f "${PDF2_SRC}/test/test.py.in" ]; then
-  echo "Synthesizing placeholder test.py.in (tests disabled)…"
   mkdir -p "${PDF2_SRC}/test"
   cat > "${PDF2_SRC}/test/test.py.in" <<'EOF'
 #!/usr/bin/env @PYTHON@
@@ -108,7 +107,8 @@ cmake -S "${PDF2_SRC}" -B "${PDF2_SRC}/build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="${PREFIX}" -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_SVG=ON \
-  -DBUILD_TESTING=OFF -DENABLE_TESTS=OFF -DPDF2HTMLEX_BUILD_TESTS=OFF
+  -DBUILD_TESTING=OFF -DENABLE_TESTS=OFF -DPDF2HTMLEX_BUILD_TESTS=OFF \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 cmake --build "${PDF2_SRC}/build" --parallel
 cmake --install "${PDF2_SRC}/build"
