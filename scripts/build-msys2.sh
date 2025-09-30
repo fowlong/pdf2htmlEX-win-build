@@ -96,6 +96,16 @@ cp -f "$GLIB_SRC" "$VENDOR_GLIB_SUB/libpoppler-glib.a"
 cp -f "$GLIB_SRC" "$VENDOR_POP_ROOT/libpoppler-glib.a"
 [ -n "${CPP_SRC:-}" ] && { cp -f "$CPP_SRC" "$VENDOR_CPP_SUB/libpoppler-cpp.a"; cp -f "$CPP_SRC" "$VENDOR_POP_ROOT/libpoppler-cpp.a"; }
 
+# ================== FontForge install block (added) ============================
+# Ensure FontForge import libs exist in /mingw64/lib so the vendor copy below works
+if ! pacman -Qi mingw-w64-x86_64-fontforge >/dev/null 2>&1; then
+  pacman -Sy --noconfirm
+  pacman -S  --noconfirm --needed mingw-w64-x86_64-fontforge
+fi
+# (Optional) quick listing for debugging
+ls -1 /mingw64/lib/libfontforge* /mingw64/lib/libgutils* /mingw64/lib/libgunicode* /mingw64/lib/libuninameslist* 2>/dev/null || true
+# ==============================================================================
+
 # ---- Vendor FontForge layout: ../fontforge/build/lib/*.a ----------------------
 VENDOR_FF_LIB="$PDF2_SRC/../fontforge/build/lib"
 mkdir -p "$VENDOR_FF_LIB"
