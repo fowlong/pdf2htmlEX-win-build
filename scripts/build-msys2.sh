@@ -50,11 +50,13 @@ cmake --install "poppler-${POPLER_VER}/build"
 POP_BUILD="poppler-${POPLER_VER}/build"
 
 # Helper: locate a lib (.a or .dll.a) either in build tree or /mingw64/lib
-find_poppler_lib() {
+find_lib() {
+  # $1 = subdir in build tree (or empty), $2 = base name (e.g. poppler-glib or fontforge)
   local sub="$1" base="$2"
+  local buildpath="$BUILD/$POP_BUILD"
   local candidates=(
-    "$BUILD/$POP_BUILD/$sub/lib${base}.a"
-    "$BUILD/$POP_BUILD/$sub/lib${base}.dll.a"
+    "$buildpath/$sub/lib${base}.a"
+    "$buildpath/$sub/lib${base}.dll.a"
     "/mingw64/lib/lib${base}.a"
     "/mingw64/lib/lib${base}.dll.a"
   )
@@ -71,29 +73,42 @@ PDF2_DIR="$BUILD/pdf2htmlEX-src"
 PDF2_SRC="$PDF2_DIR"
 [ -f "$PDF2_SRC/CMakeLists.txt" ] || PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 
-# Expected vendor layout(s)
-VENDOR_ROOT="$PDF2_SRC/../poppler/build"
-VENDOR_POP="$VENDOR_ROOT/poppler"
-VENDOR_GLIB="$VENDOR_ROOT/glib"
-VENDOR_CPP="$VENDOR_ROOT/cpp"
-mkdir -p "$VENDOR_ROOT" "$VENDOR_POP" "$VENDOR_GLIB" "$VENDOR_CPP"
+# ---- Vendor Poppler layout(s): root and subdirs ----
+VENDOR_POP_ROOT="$PDF2_SRC/../poppler/build"
+VENDOR_POP_SUB="$VENDOR_POP_ROOT/poppler"
+VENDOR_GLIB_SUB="$VENDOR_POP_ROOT/glib"
+VENDOR_CPP_SUB="$VENDOR_POP_ROOT/cpp"
+mkdir -p "$VENDOR_POP_ROOT" "$VENDOR_POP_SUB" "$VENDOR_GLIB_SUB" "$VENDOR_CPP_SUB"
 
-# Discover libraries and copy to ALL expected places (root + subdir), renaming to *.a
-CORE_SRC="$(find_poppler_lib poppler poppler)"
-GLIB_SRC="$(find_poppler_lib glib poppler-glib)"
-CPP_SRC="$(find_poppler_lib cpp poppler-cpp || true)"
+CORE_SRC="$(find_lib poppler poppler)"
+GLIB_SRC="$(find_lib glib poppler-glib)"
+CPP_SRC="$(find_lib cpp poppler-cpp || true)"
 
-# core
-cp -f "$CORE_SRC" "$VENDOR_POP/libpoppler.a"
-cp -f "$CORE_SRC" "$VENDOR_ROOT/libpoppler.a"
-# glib
-cp -f "$GLIB_SRC" "$VENDOR_GLIB/libpoppler-glib.a"
-cp -f "$GLIB_SRC" "$VENDOR_ROOT/libpoppler-glib.a"
-# cpp (optional)
-if [ -n "${CPP_SRC:-}" ]; then
-  cp -f "$CPP_SRC" "$VENDOR_CPP/libpoppler-cpp.a"
-  cp -f "$CPP_SRC" "$VENDOR_ROOT/libpoppler-cpp.a"
-fi
+# Copy+rename so both expectations are satisfied
+cp -f "$CORE_SRC" "$VENDOR_POP_SUB/libpoppler.a"
+cp -f "$CORE_SRC" "$VENDOR_POP_ROOT/libpoppler.a"
+cp -f "$GLIB_SRC" "$VENDOR_GLIB_SUB/libpoppler-glib.a"
+cp -f "$GLIB_SRC" "$VENDOR_POP_ROOT/libpoppler-glib.a"
+[ -n "${CPP_SRC:-}" ] && { cp -f "$CPP_SRC" "$VENDOR_CPP_SUB/libpoppler-cpp.a"; cp -f "$CPP_SRC" "$VENDOR_POP_ROOT/libpoppler-cpp.a"; }
+
+# ---- Vendor FontForge layout: ../fontforge/build/lib/*.a ----
+VENDOR_FF_LIB="$PDF2_SRC/../fontforge/build/lib"
+mkdir -p "$VENDOR_FF_LIB"
+
+copy_ff() {
+  # $1 base name in MSYS2 (fontforge|gutils|gunicode|uninameslist), $2 target name
+  local base="$1" out="$2"
+  local src
+  src="$(find_lib "" "$base")" || return 0  # skip if absent
+  cp -f "$src" "$VENDOR_FF_LIB/$out"
+}
+
+# MSYS2 provides import libs named libfontforge.dll.a, libgutils.dll.a, etc.
+# We rename them to lib*.a so pdf2htmlEX's CMake targets match.
+copy_ff fontforge      libfontforge.a
+copy_ff gutils         libgutils.a
+copy_ff gunicode       libgunicode.a
+copy_ff uninameslist   libuninameslist.a
 
 # Minimal test stub & cmake minimum normalization
 if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
