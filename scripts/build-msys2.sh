@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# --- MinGW toolchain + Ninja --------------------------------------------------
+# Toolchain
 export PATH=/mingw64/bin:/usr/bin:$PATH
 export CC=/mingw64/bin/gcc.exe
 export CXX=/mingw64/bin/g++.exe
@@ -12,35 +12,30 @@ export CMAKE_GENERATOR="Ninja"
 export CMAKE_MAKE_PROGRAM=/mingw64/bin/ninja.exe
 export CMAKE_BUILD_PARALLEL_LEVEL=4
 
-echo "=== tool versions ==="
+echo "=== versions ==="
 cmake --version
 ninja --version
 $CC --version | head -1
 pkg-config --version
 
-trap 'echo "---- CMake logs ----";
-      find "$PWD" -name CMakeError.log -o -name CMakeOutput.log -print -exec sed -n "1,160p" "{}" \; || true' ERR
-
+# Paths
 PREFIX=/mingw64
 ROOT="$PWD"
 BUILD="$ROOT/.build"
 STAGE="$ROOT/stage"
 DIST="$ROOT/dist"
-
-POPLER_VER="0.89.0"      # good with pdf2htmlEX v0.18.8.rc1
-PDF2_TAG="v0.18.8.rc1"
-
 mkdir -p "$BUILD" "$STAGE" "$DIST"
 
-# --------------------------------------------------------------------
-# Use prebuilt FontForge (MSYS2). Avoids flaky source build.
-# --------------------------------------------------------------------
-
-# ---------- Poppler (WITH GLib wrapper) ---------------------------------------
-echo "=== Poppler ${POPLER_VER} ==="
-cd "$BUILD"
+# ---- Pin a Poppler that *builds* on modern GCC/GLib --------------------------
+# Poppler >= 21.06.0 contains the GLib boxed-type+volatile fixes.
+# We use 21.06.1 which is widely mirrored and proven stable.
+POPLER_VER="21.06.1"
 POPLER_TARBALL="poppler-${POPLER_VER}.tar.xz"
-[ -f "$POPLER_TARBALL" ] || curl -L -o "$POPLER_TARBALL" "https://poppler.freedesktop.org/poppler-${POPLER_VER}.tar.xz"
+POPLER_URL="https://poppler.freedesktop.org/${POPLER_TARBALL}"
+
+# ---- Build Poppler with GLib --------------------------------------------------
+cd "$BUILD"
+[ -f "$POPLER_TARBALL" ] || curl -L -o "$POPLER_TARBALL" "$POPLER_URL"
 rm -rf "poppler-${POPLER_VER}"
 tar -xf "$POPLER_TARBALL"
 
@@ -51,55 +46,39 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DENABLE_UNSTABLE_API_ABI_HEADERS=ON \
   -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF \
   -DENABLE_GLIB=ON \
-  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF \
+  -DBUILD_GTK_TESTS=OFF -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# Confirm poppler-glib is visible
+# sanity: we *must* see poppler-glib
 pkg-config --modversion poppler-glib
 
-# ---------- pdf2htmlEX (release tag) ------------------------------------------
-echo "=== pdf2htmlEX ${PDF2_TAG} ==="
+# ---- Build pdf2htmlEX (maintained repo) --------------------------------------
 cd "$BUILD"
-PDF2_TARBALL="pdf2htmlEX-${PDF2_TAG}.tar.gz"
-[ -f "$PDF2_TARBALL" ] || curl -L -o "$PDF2_TARBALL" \
-  "https://github.com/pdf2htmlEX/pdf2htmlEX/archive/refs/tags/${PDF2_TAG}.tar.gz"
-
-rm -rf "pdf2htmlEX-src"
-mkdir "pdf2htmlEX-src"
-tar -xf "$PDF2_TARBALL" -C "pdf2htmlEX-src" --strip-components=1
-
-# Release tar layout: CMakeLists may be under ./pdf2htmlEX/
-SRC_DIR="pdf2htmlEX-src"
-if [ -f "${SRC_DIR}/CMakeLists.txt" ]; then
-  PDF2_SRC="${SRC_DIR}"
-elif [ -f "${SRC_DIR}/pdf2htmlEX/CMakeLists.txt" ]; then
-  PDF2_SRC="${SRC_DIR}/pdf2htmlEX"
-else
-  echo "Could not find CMakeLists.txt in ${SRC_DIR}"
-  find "${SRC_DIR}" -maxdepth 2 -name CMakeLists.txt -print
-  exit 1
+# Grab the actively maintained repo (works with newer Poppler)
+if [ ! -d "pdf2htmlEX-src" ]; then
+  git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git pdf2htmlEX-src
 fi
 
-# Patch ALL CMakeLists to cmake_minimum_required(VERSION 3.5)
-while IFS= read -r -d '' f; do
-  sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' "$f"
-done < <(find "$PDF2_SRC" -name CMakeLists.txt -print0)
+# The repo can have CMakeLists at repo root or in ./pdf2htmlEX/
+PDF2_SRC="pdf2htmlEX-src"
+if [ ! -f "${PDF2_SRC}/CMakeLists.txt" ] && [ -f "${PDF2_SRC}/pdf2htmlEX/CMakeLists.txt" ]; then
+  PDF2_SRC="${PDF2_SRC}/pdf2htmlEX"
+fi
 
-# Disable tests + provide stub if template is missing
+# Ensure modern CMake policy & disable tests (avoid missing test.py.in noise)
+find "$PDF2_SRC" -name CMakeLists.txt -print0 | \
+  xargs -0 -I{} sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' {}
+
 if [ ! -f "${PDF2_SRC}/test/test.py.in" ]; then
   mkdir -p "${PDF2_SRC}/test"
   cat > "${PDF2_SRC}/test/test.py.in" <<'EOF'
 #!/usr/bin/env @PYTHON@
-# Placeholder for CI builds; tests disabled.
-if __name__ == "__main__":
-    print("pdf2htmlEX tests disabled")
+print("pdf2htmlEX tests disabled for CI")
 EOF
 fi
-
-echo "Using source dir: ${PDF2_SRC}"
-ls -al "${PDF2_SRC}"
 
 cmake -S "${PDF2_SRC}" -B "${PDF2_SRC}/build" \
   -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
@@ -113,27 +92,21 @@ cmake -S "${PDF2_SRC}" -B "${PDF2_SRC}/build" \
 cmake --build "${PDF2_SRC}/build" --parallel
 cmake --install "${PDF2_SRC}/build"
 
-# ---------- Stage portable bundle ---------------------------------------------
-echo "=== Stage portable bundle ==="
+# ---- Stage a portable bundle --------------------------------------------------
 mkdir -p "${STAGE}/bin" "${STAGE}/share"
-
-# exe
 cp -v "${PREFIX}/bin/pdf2htmlEX.exe" "${STAGE}/bin/"
 
 # runtime data
 [ -d "${PREFIX}/share/pdf2htmlEX" ] && cp -Rv "${PREFIX}/share/pdf2htmlEX" "${STAGE}/share/" || true
 [ -d "${PREFIX}/share/poppler"   ] && cp -Rv "${PREFIX}/share/poppler"   "${STAGE}/share/" || true
 
-# dependent DLLs next to exe
+# bring along dlls next to the exe
 ntldd -R "${STAGE}/bin/pdf2htmlEX.exe" \
-  | awk '/=>/ {print $3}' \
-  | sed -e 's#\\#/#g' \
-  | sort -u \
-  | while read -r dll; do
-      [ -f "$dll" ] && cp -v "$dll" "${STAGE}/bin/" || true
-    done
+ | awk '/=>/ {print $3}' \
+ | sed -e 's#\\#/#g' | sort -u \
+ | while read -r dll; do [ -f "$dll" ] && cp -v "$dll" "${STAGE}/bin/" || true; done
 
 mkdir -p "$DIST"
 cd "$STAGE/.."
 zip -r "${DIST}/pdf2htmlEX-windows-portable.zip" "stage"
-echo "Artifact ready at ${DIST}/pdf2htmlEX-windows-portable.zip"
+echo "OK: ${DIST}/pdf2htmlEX-windows-portable.zip"
