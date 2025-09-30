@@ -1,65 +1,450 @@
-name: Build pdf2htmlEX Windows
+#!/bin/bash.exe
+set -ex
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+if [ ! -d /mingw ]; then
+	echo "/mingw not mounted, assuming it lives at c:\\mingw"
+	mount c:/mingw /mingw
+fi
 
-jobs:
-  build:
-    runs-on: windows-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-      
-    - name: Set up MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          mingw-w64-x86_64-toolchain
-          mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-poppler
-          mingw-w64-x86_64-cairo
-          mingw-w64-x86_64-freetype
-          mingw-w64-x86_64-pkg-config
-          mingw-w64-x86_64-libssh2
-          make
-          git
+if [ ! -d /c/Python27 ]; then
+	echo "You need to install python 2.7.x to c:\\Python27 and make sure it is added to the path"
+	echo "Start a new MinGW shell when you have done this"
+	exit 1
+fi
 
-    - name: Build pdf2htmlEX
-      shell: msys2 {0}
-      run: |
-        # Create build directory
-        mkdir build
-        cd build
-        
-        # Configure with CMake
-        cmake .. \
-          -G "MSYS Makefiles" \
-          -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install" \
-          -DENABLE_TESTING=OFF
-        
-        # Build
-        make -j$(nproc)
-        
-        # Install to specified directory
-        make install
+# get wget
+mingw-get update
+if [ ! -e /bin/wget.exe ]; then
+	mingw-get install msys-wget 
+fi
+if [ ! -e /bin/unzip.exe ]; then
+	mingw-get install msys-unzip
+fi
 
-    - name: Package artifacts
-      run: |
-        # Create dist directory
-        mkdir dist
-        # Copy executable and required DLLs
-        copy install\bin\pdf2htmlEX.exe dist\
-        # Add any additional DLL dependencies here if needed
-      shell: cmd
+if [ ! -e /mingw/bin/curl ]; then 
+	# now use wget to fetch curl and install it
+	wget http://curl.haxx.se/download/curl-7.20.0.tar.gz
+	tar -zxvf curl-7.20.0.tar.gz
+	cd curl-7.20.0
+	./configure --prefix=/mingw
+	make
+	make install 
+	cd ..
+fi
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: pdf2htmlEX-windows-x64
-        path: dist/
+# and we're off - zlib first
+if [ ! -e /mingw/lib/libz.a ]; then 
+	wget -nc http://zlib.net/zlib-1.2.8.tar.xz
+	tar xvf zlib-1.2.8.tar.xz
+	pushd zlib-1.2.8
+	make -f win32/Makefile.gcc BINARY_PATH=/mingw/bin INCLUDE_PATH=/mingw/include LIBRARY_PATH=/mingw/lib SHARED_MODE=1 install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libffi.a ]; then 	
+	wget -nc ftp://sourceware.org/pub/libffi/libffi-3.0.13.tar.gz
+	tar xvf libffi-3.0.13.tar.gz
+	pushd libffi-3.0.13
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/bin/pkg-config.exe ]; then 
+	wget -c http://ingar.satgnu.net/devenv/mingw32/files/msys-pkg-config-0.26-static.zip 
+	unzip msys-pkg-config-0.26-static.zip 
+	cp pkg-config.exe /mingw/bin
+fi
+
+if [ ! -e gettext-0.18.3.1/gettext-tools/gnulib-lib/.libs/libgettextlib.dll.a ]; then
+	wget -nc http://ftp.jaist.ac.jp/pub/GNU/gettext/gettext-0.18.3.1.tar.gz
+	tar xvf gettext-0.18.3.1.tar.gz
+	pushd gettext-0.18.3.1
+	 CPPFLAGS="-DGNULIB_defined_struct_timespec=1" ./configure --prefix=/mingw
+	#sed -i 's/struct timespec/struct timespecX/g' gettext-runtime/gnulib-lib/time.h
+	#sed -i 's/struct timespec/struct timespecX/g' gettext-tools/gnulib-lib/sys/time.h
+	#sed -i 's/struct timespec/struct timespecX/g' gettext-tools/gnulib-lib/time.h
+	#sed -i 's/struct timespec/struct timespecX/g' gettext-tools/libgettextpo/time.h
+	make
+	make install
+	popd
+fi
+
+	
+if [ ! -e /mingw/lib/libgio-2.0.la ]; then
+	wget --no-check-certificate http://download.gnome.org/sources/glib/2.39/glib-2.39.1.tar.xz
+	tar xvf glib-2.39.1.tar.xz
+	pushd glib-2.39.1
+	sed -i 's$rand_s...seed....;$seed[i]=rand();$g' glib/grand.c
+	CFLAGS="-Wall -Ofast" ./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+
+if [ ! -e /mingw/lib/libpng.a ]; then
+	wget -nc http://download.sourceforge.net/libpng/libpng-1.6.7.tar.xz
+	tar xvf libpng-1.6.7.tar.xz
+	pushd libpng-1.6.7
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/lib/libjpeg.a ]; then
+	wget -nc http://www.ijg.org/files/jpegsrc.v9.tar.gz
+	tar xvf jpegsrc.v9.tar.gz
+	pushd jpeg-9
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/bin/xz.exe ]; then
+	wget -nc http://tukaani.org/xz/xz-5.0.5.tar.xz
+	tar xvf xz-5.0.5.tar.xz
+	pushd xz-5.0.5
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libtiff.a ]; then
+	wget -nc http://download.osgeo.org/libtiff/tiff-4.0.3.tar.gz
+	tar xvf tiff-4.0.3.tar.gz
+	pushd tiff-4.0.3
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+
+if [ ! -e /mingw/lib/liblcms2.a ]; then
+	wget -nc http://download.sourceforge.net/lcms/lcms2-2.5.tar.gz
+	tar xvf lcms2-2.5.tar.gz
+	pushd lcms2-2.5
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/lib/libopenjpeg.a ]; then
+	wget -nc http://openjpeg.googlecode.com/files/openjpeg-1.5.1.tar.gz
+	tar xvf openjpeg-1.5.1.tar.gz
+	pushd openjpeg-1.5.1
+	sed -i s/HANDLE/HINSTANCE/g libopenjpeg/openjpeg.c
+	./configure --prefix=/mingw --enable-mj2 --enable-jpwl
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/lib/libfreetype.a ]; then
+	wget -nc http://download.sourceforge.net/freetype/freetype-2.5.0.1.tar.bz2
+	tar xvf freetype-2.5.0.1.tar.bz2
+	pushd freetype-2.5.0.1
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libopenjpeg.a ]; then
+	wget -nc http://jaist.dl.sourceforge.jp/nkf/53171/nkf-2.1.2.tar.gz
+	tar xvf nkf-2.1.2.tar.gz
+	pushd nkf-2.1.2
+	make
+	make prefix=/mingw install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libxml2.a ]; then
+	wget -nc ftp://xmlsoft.org/libxml2/libxml2-2.9.1.tar.gz
+	tar xvf libxml2-2.9.1.tar.gz
+	pushd libxml2-2.9.1
+	./configure --prefix=/mingw --without-python
+	make
+	make install
+	popd
+fi
+
+export LIBXML2_CFLAGS=-I/mingw/include/libxml2
+export LIBXML2_LIBS=-lxml2
+export FREETYPE_CFLAGS=-I/mingw/include/freetype2
+export FREETYPE_LIBS=-lfreetype
+
+if [ ! -e /mingw/lib/libfontconfig.a ]; then
+	wget -nc http://www.freedesktop.org/software/fontconfig/release/fontconfig-2.11.0.tar.bz2
+	tar xvf fontconfig-2.11.0.tar.bz2
+	pushd fontconfig-2.11.0
+	./configure --prefix=/mingw --enable-libxml2
+	sed -i 's/#ifdef MemoryBarrier/#if 0/g' src/fcatomic.h
+	echo "void main() {}" > test/test-migration.c
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libpixman-1.a ]; then
+	wget -nc http://cairographics.org/releases/pixman-0.32.4.tar.gz
+	tar xvf pixman-0.32.4.tar.gz
+	pushd pixman-0.32.4
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libcairo.a ]; then
+	wget -nc http://cairographics.org/releases/cairo-1.12.16.tar.xz
+	tar xvf cairo-1.12.16.tar.xz
+	pushd cairo-1.12.16
+	./configure --prefix=/mingw
+	sed -i 's/typedef SSIZE_T ssize_t;//g' util/cairo-missing/cairo-missing.h
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libssl.a ]; then
+	wget -nc http://www.openssl.org/source/openssl-1.0.1e.tar.gz
+	tar xvf openssl-1.0.1e.tar.gz
+	pushd openssl-1.0.1e
+	./config --prefix=/mingw shared
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libssh2.a ]; then
+	wget -nc http://www.libssh2.org/download/libssh2-1.4.3.tar.gz
+	tar xvf libssh2-1.4.3.tar.gz
+	pushd libssh2-1.4.3
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e curl-7.33.0/src/curl.exe ]; then
+	wget -nc http://curl.haxx.se/download/curl-7.33.0.tar.bz2
+	tar xvf curl-7.33.0.tar.bz2
+	pushd curl-7.33.0
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+	
+	
+if [ `/mingw/bin/pkg-config --version` != "0.28" ]; then
+	wget -nc http://pkgconfig.freedesktop.org/releases/pkg-config-0.28.tar.gz
+	tar xvf pkg-config-0.28.tar.gz
+	pushd pkg-config-0.28
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/lib/libpoppler.a ]; then	
+	wget -nc http://poppler.freedesktop.org/poppler-0.24.3.tar.xz
+	tar xvf poppler-0.24.3.tar.xz
+	pushd poppler-0.24.3
+	LIBOPENJPEG_CFLAGS="`pkg-config --cflags libopenjpeg`" LIBOPENJPEG_LIBS="`pkg-config --libs libopenjpeg`" ./configure --prefix=/mingw --with-font-configuration=fontconfig --enable-xpdf-headers --enable-zlib --enable-libcurl --enable-poppler-glib --disable-gtk-test --disable-poppler-qt5
+	echo '#undef WINVER' >> config.h
+	echo '#define WINVER 0x0500' >> config.h
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e /mingw/lib/libpango-1.0.la ]; then		
+	wget -nc --no-check-certificate http://download.gnome.org/sources/pango/1.35/pango-1.35.0.tar.xz
+	tar xvf pango-1.35.0.tar.xz
+	pushd pango-1.35.0
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/lib/libplibc.la ]; then	
+	wget -nc http://download.sourceforge.net/plibc/plibc-0.1.7-src.tar.gz
+	tar xvf plibc-0.1.7-src.tar.gz
+	pushd PlibC-0.1.7
+	./configure --prefix=/mingw
+	make
+	make install
+	popd
+fi
+
+if [ ! -e /mingw/lib/libfontforge.a ]; then	
+	wget -nc --no-check-certificate -O fontforge-fontforge.tar.gz https://github.com/fontforge/fontforge/tarball/master || true
+	tar xvf fontforge-fontforge.tar.gz || true
+	pushd fontforge-fontforge*
+	export CPPFLAGS="$CPPFLAGS -DWINDOWS -D_WIN32_IE=0x0501"
+	./bootstrap
+	PYTHON_LIBS="/c/Python27/lib" PYTHON_CFLAGS="-I /c/Python27/include" ./configure --prefix=/mingw --disable-python-extension --disable-python-scripting 
+	cp fontforge/noprefs.c fontforge/noprefs.c.safe
+	sed -i 's/HAVE_LANGINFO_H/NOHAVE_ANY_LANGINFO_H/g' fontforge/noprefs.c
+	echo '#undef small' >> fontforge/ffglib.h
+	cat > patch << EOF
+--- fontforge/woff.c
++++ fontforge/woff.c
+@@ -520,3 +520,50 @@
+ }
+ 
+ #endif /* ! _NO_LIBPNG */
++
++#include <windows.h>
++#include <io.h>
++
++ FILE *
++tmpfile (void)
++{
++    DWORD path_len;
++    WCHAR path_name[MAX_PATH + 1];
++    WCHAR file_name[MAX_PATH + 1];
++    HANDLE handle;
++    int fd;
++    FILE *fp;
++
++    path_len = GetTempPathW (MAX_PATH, path_name);
++    if (path_len <= 0 || path_len >= MAX_PATH)
++    return NULL;
++
++    if (GetTempFileNameW (path_name, L"ps_", 0, file_name) == 0)
++    return NULL;
++
++    handle = CreateFileW (file_name,
++             GENERIC_READ | GENERIC_WRITE,
++             0,
++             NULL,
++             CREATE_ALWAYS,
++             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE,
++             NULL);
++    if (handle == INVALID_HANDLE_VALUE) {
++    DeleteFileW (file_name);
++    return NULL;
++    }
++
++    fd = _open_osfhandle((intptr_t) handle, 0);
++    if (fd < 0) {
++    CloseHandle (handle);
++    return NULL;
++    }
++
++    fp = fdopen(fd, "w+b");
++    if (fp == NULL) {
++    _close(fd);
++    return NULL;
++    }
++
++    return fp;
++}
+\ No newline at end of file
+EOF
+	patch -N -u -p0 < patch
+	make
+	make install
+	popd
+fi
+	
+if [ ! -e ttfautohint-0.97/lib/ttfautohint.o ]; then		
+	wget -nc http://download.sourceforge.net/freetype/ttfautohint-0.97.tar.gz
+	tar xvf ttfautohint-0.97.tar.gz
+	pushd ttfautohint-0.97
+	./configure --prefix=/mingw --with-qt=no
+	pushd lib
+	make
+	make install
+	popd
+	popd
+fi
+	
+if [ ! -d /share/cmake ]; then
+	wget http://www.cmake.org/files/v3.1/cmake-3.1.1-win32-x86.zip
+	unzip -d /share cmake-3.1.1-win32-x86.zip
+	mv /share/cmake-3.1.1-win32-x86 /share/cmake
+
+fi
+
+export PATH=/share/cmake/bin:$PATH	
+	
+wget -nc --no-check-certificate -O  coolwanglu-pdf2htmlEX.tar.gz https://github.com/coolwanglu/pdf2htmlEX/tarball/master || true
+tar xvf coolwanglu-pdf2htmlEX.tar.gz
+cd coolwanglu-pdf2htmlEX*
+rm -rf build
+mkdir build; cd build
+sed -i 's/CDECL//g' /mingw/include/poppler/Error.h
+cat > patch << EOF
+--- ../CMakeLists.txt
++++ ../CMakeLists.txt
+@@ -77,6 +77,9 @@
+ link_directories(\${FONTFORGE_LIBRARY_DIRS})
+ set(PDF2HTMLEX_LIBS \${PDF2HTMLEX_LIBS} \${FONTFORGE_LIBRARIES})
+ 
++# Add additional dependencies
++set(PDF2HTMLEX_LIBS \${PDF2HTMLEX_LIBS} intl iconv gettextlib gettextpo gutils png jpeg openjpeg glib-2.0.dll z xml2 tiff gio-2.0.dll ltdl plibc.dll)
++
+ # debug build flags (overwrite default cmake debug flags)
+ set(CMAKE_C_FLAGS_DEBUG "-ggdb -pg")
+ set(CMAKE_CXX_FLAGS_DEBUG "-ggdb -pg")
+EOF
+patch -N -u -p0 < patch
+cmake .. -G "MSYS Makefiles" -DCMAKE_INSTALL_PREFIX=/mingw -DENABLE_SVG=ON 
+sed -i 's/#ifndef __STRICT_ANSI__/#ifndef X__STRICT_ANSI__/g' /mingw/include/math.h
+sed -i 's/#ifndef __STRICT_ANSI__/#ifndef X__STRICT_ANSI__/g' /mingw/include/string.h
+make
+make install
+
+INSTALLDIR=~/pdf2htmlEX.Install
+
+if [ -d $INSTALLDIR ]; then
+	rm -rf $INSTALLDIR/*
+fi
+mkdir -p $INSTALLDIR
+cd $INSTALLDIR
+mkdir data
+cp -r /mingw/share/pdf2htmlEX/* data
+cp /mingw/bin/pdf2htmlEX .
+cp /mingw/bin/libcairo-2.dll .
+cp /mingw/bin/libcurl-4.dll .
+cp /mingw/bin/libeay32.dll .
+cp /mingw/bin/libffi-6.dll . 
+cp /mingw/bin/libfontconfig-1.dll .
+cp /mingw/bin/libfontforge-2.dll . 
+cp /mingw/bin/libfreetype-6.dll . 
+cp /mingw/bin/libgcc_s_dw2-1.dll .
+cp /mingw/bin/libgio-2.0-0.dll .
+cp /mingw/bin/libglib-2.0-0.dll . 
+cp /mingw/bin/libgmodule-2.0-0.dll . 
+cp /mingw/bin/libgobject-2.0-0.dll .
+cp /mingw/bin/libgunicode-4.dll . 
+cp /mingw/bin/libgutils-2.dll .
+cp /mingw/bin/libiconv-2.dll .
+cp /mingw/bin/libintl-8.dll . 
+cp /mingw/bin/libjpeg-9.dll .
+cp /mingw/bin/liblcms2-2.dll .
+cp /mingw/bin/libltdl-7.dll .
+cp /mingw/bin/liblzma-5.dll .
+cp /mingw/bin/libopenjpeg-1.dll .
+cp /mingw/bin/libpixman-1-0.dll .
+cp /mingw/bin/libpng16-16.dll .
+cp /mingw/bin/libpoppler-43.dll .
+cp /mingw/bin/libssh2-1.dll .
+cp /mingw/bin/libstdc++-6.dll .
+cp /mingw/bin/libtiff-5.dll .
+cp /mingw/bin/libxml2-2.dll .
+cp /mingw/bin/ssleay32.dll .
+cp /mingw/bin/zlib1.dll .
+
+strip -g *.dll
