@@ -66,7 +66,7 @@ rm -rf "pdf2htmlEX-src"
 mkdir "pdf2htmlEX-src"
 tar -xf "$PDF2_TARBALL" -C "pdf2htmlEX-src" --strip-components=1
 
-# In releases, CMakeLists.txt is under ./pdf2htmlEX/ (not the root)
+# In releases, CMakeLists.txt can live at ./pdf2htmlEX/
 SRC_DIR="pdf2htmlEX-src"
 if [ -f "${SRC_DIR}/CMakeLists.txt" ]; then
   PDF2_SRC="${SRC_DIR}"
@@ -78,6 +78,19 @@ else
   exit 1
 fi
 
+# Some tags still unconditionally configure a test file. Disable tests,
+# but also drop a tiny placeholder if the template is missing.
+if [ ! -f "${PDF2_SRC}/test/test.py.in" ]; then
+  echo "Synthesizing placeholder test.py.in (tests will be disabled)…"
+  mkdir -p "${PDF2_SRC}/test"
+  cat > "${PDF2_SRC}/test/test.py.in" <<'EOF'
+#!/usr/bin/env @PYTHON@
+# Placeholder for CI builds; tests disabled.
+if __name__ == "__main__":
+    print("pdf2htmlEX tests disabled")
+EOF
+fi
+
 echo "Using source dir: ${PDF2_SRC}"
 ls -al "${PDF2_SRC}"
 
@@ -87,6 +100,7 @@ cmake -S "${PDF2_SRC}" -B "${PDF2_SRC}/build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="${PREFIX}" -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_SVG=ON \
+  -DBUILD_TESTING=OFF -DENABLE_TESTS=OFF -DPDF2HTMLEX_BUILD_TESTS=OFF \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 cmake --build "${PDF2_SRC}/build" --parallel
