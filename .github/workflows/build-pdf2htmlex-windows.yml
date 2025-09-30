@@ -9,7 +9,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,7 +47,8 @@ jobs:
             mingw-w64-x86_64-ntldd
             mingw-w64-x86_64-fontforge
             mingw-w64-x86_64-libuninameslist
-
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-qt5
       - name: Build (MSYS2 bash)
         shell: msys2 {0}
         run: bash ./scripts/build-msys2.sh
