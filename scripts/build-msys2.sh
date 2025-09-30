@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# --- MinGW toolchain + Ninja (no generator confusion) -------------------------
+# --- MinGW toolchain + Ninja --------------------------------------------------
 export PATH=/mingw64/bin:/usr/bin:$PATH
 export CC=/mingw64/bin/gcc.exe
 export CXX=/mingw64/bin/g++.exe
@@ -27,16 +27,16 @@ BUILD="$ROOT/.build"
 STAGE="$ROOT/stage"
 DIST="$ROOT/dist"
 
-POPLER_VER="0.89.0"        # known-good for pdf2htmlEX v0.18.8.rc1
+POPLER_VER="0.89.0"      # good match for pdf2htmlEX v0.18.8.rc1
 PDF2_TAG="v0.18.8.rc1"
 
 mkdir -p "$BUILD" "$STAGE" "$DIST"
 
 # --------------------------------------------------------------------
-# Use prebuilt FontForge (MSYS2 package). No source build headaches.
+# Use prebuilt FontForge (MSYS2). Avoids flaky source build.
 # --------------------------------------------------------------------
 
-# ---------- Poppler (with xpdf/unstable headers) ------------------------------
+# ---------- Poppler (WITH GLib wrapper) ---------------------------------------
 echo "=== Poppler ${POPLER_VER} ==="
 cd "$BUILD"
 POPLER_TARBALL="poppler-${POPLER_VER}.tar.xz"
@@ -49,11 +49,15 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_UNSTABLE_API_ABI_HEADERS=ON \
-  -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF -DENABLE_GLIB=OFF \
+  -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF \
+  -DENABLE_GLIB=ON \        # <— enable poppler-glib so pdf2htmlEX can link
   -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
+
+# Verify pkg-config can see poppler-glib (guards against the previous error)
+pkg-config --modversion poppler-glib
 
 # ---------- pdf2htmlEX (release tag) ------------------------------------------
 echo "=== pdf2htmlEX ${PDF2_TAG} ==="
@@ -66,7 +70,7 @@ rm -rf "pdf2htmlEX-src"
 mkdir "pdf2htmlEX-src"
 tar -xf "$PDF2_TARBALL" -C "pdf2htmlEX-src" --strip-components=1
 
-# In releases, CMakeLists.txt can live at ./pdf2htmlEX/
+# Release tar layout: CMakeLists may be under ./pdf2htmlEX/
 SRC_DIR="pdf2htmlEX-src"
 if [ -f "${SRC_DIR}/CMakeLists.txt" ]; then
   PDF2_SRC="${SRC_DIR}"
@@ -78,10 +82,9 @@ else
   exit 1
 fi
 
-# Some tags still unconditionally configure a test file. Disable tests,
-# but also drop a tiny placeholder if the template is missing.
+# Some tags configure a test template; disable tests and provide a stub.
 if [ ! -f "${PDF2_SRC}/test/test.py.in" ]; then
-  echo "Synthesizing placeholder test.py.in (tests will be disabled)…"
+  echo "Synthesizing placeholder test.py.in (tests disabled)…"
   mkdir -p "${PDF2_SRC}/test"
   cat > "${PDF2_SRC}/test/test.py.in" <<'EOF'
 #!/usr/bin/env @PYTHON@
@@ -94,6 +97,7 @@ fi
 echo "Using source dir: ${PDF2_SRC}"
 ls -al "${PDF2_SRC}"
 
+# Tell CMake to use the installed (pkg-config visible) poppler/glib
 cmake -S "${PDF2_SRC}" -B "${PDF2_SRC}/build" \
   -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
@@ -110,14 +114,14 @@ cmake --install "${PDF2_SRC}/build"
 echo "=== Stage portable bundle ==="
 mkdir -p "${STAGE}/bin" "${STAGE}/share"
 
-# main exe
+# exe
 cp -v "${PREFIX}/bin/pdf2htmlEX.exe" "${STAGE}/bin/"
 
 # runtime data
 [ -d "${PREFIX}/share/pdf2htmlEX" ] && cp -Rv "${PREFIX}/share/pdf2htmlEX" "${STAGE}/share/" || true
 [ -d "${PREFIX}/share/poppler"   ] && cp -Rv "${PREFIX}/share/poppler"   "${STAGE}/share/" || true
 
-# copy dependent DLLs next to the exe
+# dependent DLLs next to exe
 ntldd -R "${STAGE}/bin/pdf2htmlEX.exe" \
   | awk '/=>/ {print $3}' \
   | sed -e 's#\\#/#g' \
@@ -125,9 +129,6 @@ ntldd -R "${STAGE}/bin/pdf2htmlEX.exe" \
   | while read -r dll; do
       [ -f "$dll" ] && cp -v "$dll" "${STAGE}/bin/" || true
     done
-
-# optional: shrink size
-# for f in "${STAGE}/bin/"*.dll "${STAGE}/bin/"*.exe; do x86_64-w64-mingw32-strip -g "$f" || true; done
 
 mkdir -p "$DIST"
 cd "$STAGE/.."
