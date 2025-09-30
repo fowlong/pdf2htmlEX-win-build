@@ -23,7 +23,7 @@ ninja --version
 $CC --version | head -1
 pkg-config --version
 
-# ---------------- 1) Poppler 21.06.1 (static, GLib ON, Boost/NSS OFF) ---------
+# ---------------- 1) Poppler 21.06.1 (GLib ON, Boost/NSS OFF) ------------------
 POPLER_VER="21.06.1"
 POPLER_TBZ="poppler-${POPLER_VER}.tar.xz"
 POPLER_URL="https://poppler.freedesktop.org/${POPLER_TBZ}"
@@ -43,18 +43,33 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DENABLE_QT5=OFF -DENABLE_QT6=OFF \
   -DENABLE_BOOST=OFF \
   -DENABLE_NSS3=OFF
-  # NOTE: do NOT set -DTESTDATADIR. Let Poppler detect/miss it gracefully.
 
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# static libs from the build tree
+# Build tree root for convenience
 POP_BUILD="poppler-${POPLER_VER}/build"
-LIB_POPPLER="$BUILD/$POP_BUILD/poppler/libpoppler.a"
-LIB_POPPLER_GLIB="$BUILD/$POP_BUILD/glib/libpoppler-glib.a"
-LIB_POPPLER_CPP="$BUILD/$POP_BUILD/cpp/libpoppler-cpp.a"
 
-# ---------------- 2) pdf2htmlEX sources --------------------------------------
+# Helper: find a poppler lib (prefers static .a, falls back to .dll.a) and echo path
+find_poppler_lib() {
+  # $1 = subdir in build tree (poppler|glib|cpp), $2 = base name (poppler|poppler-glib|poppler-cpp)
+  local sub="$1" base="$2"
+  local candidates=(
+    "$BUILD/$POP_BUILD/$sub/lib${base}.a"
+    "$BUILD/$POP_BUILD/$sub/lib${base}.dll.a"
+    "/mingw64/lib/lib${base}.a"
+    "/mingw64/lib/lib${base}.dll.a"
+  )
+  for f in "${candidates[@]}"; do
+    if [ -f "$f" ]; then
+      echo "$f"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---------------- 2) pdf2htmlEX sources ---------------------------------------
 PDF2_DIR="$BUILD/pdf2htmlEX-src"
 if [ ! -d "$PDF2_DIR" ]; then
   git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git "$PDF2_DIR"
@@ -62,14 +77,21 @@ fi
 PDF2_SRC="$PDF2_DIR"
 [ -f "$PDF2_SRC/CMakeLists.txt" ] || PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 
-# expected vendor layout: ../poppler/build/{poppler,glib,cpp}
+# Vendor layout expected by historical CMake in pdf2htmlEX:
 VENDOR_POP="$PDF2_SRC/../poppler/build"
 mkdir -p "$VENDOR_POP/poppler" "$VENDOR_POP/glib" "$VENDOR_POP/cpp"
-cp -f "$LIB_POPPLER"       "$VENDOR_POP/poppler/"
-cp -f "$LIB_POPPLER_GLIB"  "$VENDOR_POP/glib/"
-[ -f "$LIB_POPPLER_CPP" ] && cp -f "$LIB_POPPLER_CPP" "$VENDOR_POP/cpp/" || true
 
-# minimal test stub & cmake min version normalization
+# Discover + copy/rename libs so paths match what pdf2htmlEX looks for
+POP_CORE_SRC="$(find_poppler_lib poppler poppler)"
+POP_GLIB_SRC="$(find_poppler_lib glib    poppler-glib)"
+# cpp is optional; only copy if present
+POP_CPP_SRC="$(find_poppler_lib cpp     poppler-cpp || true)"
+
+cp -f "$POP_CORE_SRC" "$VENDOR_POP/poppler/libpoppler.a"
+cp -f "$POP_GLIB_SRC" "$VENDOR_POP/glib/libpoppler-glib.a"
+[ -n "${POP_CPP_SRC:-}" ] && cp -f "$POP_CPP_SRC" "$VENDOR_POP/cpp/libpoppler-cpp.a"
+
+# Minimal test stub & CMake minimum normalization
 if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
   mkdir -p "$PDF2_SRC/test"
   printf '%s\n' '#!/usr/bin/env @PYTHON@' 'print("tests disabled")' > "$PDF2_SRC/test/test.py.in"
@@ -77,7 +99,7 @@ fi
 find "$PDF2_SRC" -name CMakeLists.txt -print0 | xargs -0 -I{} \
   sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' {}
 
-# ---------------- 3) build pdf2htmlEX ----------------------------------------
+# ---------------- 3) Build pdf2htmlEX -----------------------------------------
 cmake -S "$PDF2_SRC" -B "$PDF2_SRC/build" \
   -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
@@ -86,10 +108,10 @@ cmake -S "$PDF2_SRC" -B "$PDF2_SRC/build" \
 
 cmake --build "$PDF2_SRC/build" --parallel
 
-# ---------------- 4) package portable zip ------------------------------------
+# ---------------- 4) Package portable zip -------------------------------------
 cp -f "$PDF2_SRC/build/pdf2htmlEX.exe" "$STAGE/"
 
-# collect dependent DLLs next to exe
+# Bring DLLs next to exe
 ntldd -R "$STAGE/pdf2htmlEX.exe" | awk '/=>/ {print $3}' | sed 's#\\#/#g' | sort -u \
   | while read -r dll; do [ -f "$dll" ] && cp -n "$dll" "$STAGE/" || true; done
 
