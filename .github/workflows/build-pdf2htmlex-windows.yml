@@ -19,17 +19,15 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: >
+          # IMPORTANT: package names ONLY; no comments here
+          install: >-
             base-devel
             git
             curl
             zip
-            # use MSYS cmake to drive MinGW builds
             cmake
-            # use MinGW ninja + toolchain (avoid generator confusion)
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-toolchain
-            # libs we won’t build from source
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-harfbuzz
