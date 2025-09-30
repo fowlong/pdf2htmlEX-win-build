@@ -10,6 +10,7 @@ export PKG_CONFIG=/mingw64/bin/pkg-config
 export CMAKE_GENERATOR="Ninja"
 export CMAKE_MAKE_PROGRAM=/mingw64/bin/ninja.exe
 export CMAKE_BUILD_PARALLEL_LEVEL=4
+shopt -s nullglob
 
 ROOT="$(pwd)"
 BUILD="$ROOT/.build"
@@ -49,16 +50,20 @@ cmake --install "poppler-${POPLER_VER}/build"
 
 POP_BUILD="poppler-${POPLER_VER}/build"
 
-# Helper: locate a lib (.a or .dll.a) either in build tree or /mingw64/lib
-find_lib() {
-  # $1 = subdir in build tree (or empty), $2 = base name (e.g. poppler-glib or fontforge)
+# -------- helper: find a lib with glob fallbacks (versioned names OK) ----------
+find_lib_glob() {
+  # $1 = build-subdir (may be empty), $2 = base (e.g. poppler-glib | fontforge)
   local sub="$1" base="$2"
-  local buildpath="$BUILD/$POP_BUILD"
+  local root="$BUILD/$POP_BUILD"
   local candidates=(
-    "$buildpath/$sub/lib${base}.a"
-    "$buildpath/$sub/lib${base}.dll.a"
+    "$root/$sub/lib${base}.a"
+    "$root/$sub/lib${base}.dll.a"
+    "$root/$sub"/lib${base}-*.a
+    "$root/$sub"/lib${base}-*.dll.a
     "/mingw64/lib/lib${base}.a"
     "/mingw64/lib/lib${base}.dll.a"
+    "/mingw64/lib"/lib${base}-*.a
+    "/mingw64/lib"/lib${base}-*.dll.a
   )
   for f in "${candidates[@]}"; do
     [ -f "$f" ] && { echo "$f"; return 0; }
@@ -80,37 +85,37 @@ VENDOR_GLIB_SUB="$VENDOR_POP_ROOT/glib"
 VENDOR_CPP_SUB="$VENDOR_POP_ROOT/cpp"
 mkdir -p "$VENDOR_POP_ROOT" "$VENDOR_POP_SUB" "$VENDOR_GLIB_SUB" "$VENDOR_CPP_SUB"
 
-CORE_SRC="$(find_lib poppler poppler)"
-GLIB_SRC="$(find_lib glib poppler-glib)"
-CPP_SRC="$(find_lib cpp poppler-cpp || true)"
+# Poppler libs (copy to root AND subdirs; rename to expected plain names)
+CORE_SRC="$(find_lib_glob poppler poppler)"
+GLIB_SRC="$(find_lib_glob glib poppler-glib)"
+CPP_SRC="$(find_lib_glob cpp poppler-cpp || true)"
 
-# Copy+rename so both expectations are satisfied
 cp -f "$CORE_SRC" "$VENDOR_POP_SUB/libpoppler.a"
 cp -f "$CORE_SRC" "$VENDOR_POP_ROOT/libpoppler.a"
 cp -f "$GLIB_SRC" "$VENDOR_GLIB_SUB/libpoppler-glib.a"
 cp -f "$GLIB_SRC" "$VENDOR_POP_ROOT/libpoppler-glib.a"
 [ -n "${CPP_SRC:-}" ] && { cp -f "$CPP_SRC" "$VENDOR_CPP_SUB/libpoppler-cpp.a"; cp -f "$CPP_SRC" "$VENDOR_POP_ROOT/libpoppler-cpp.a"; }
 
-# ---- Vendor FontForge layout: ../fontforge/build/lib/*.a ----
+# ---- Vendor FontForge layout: ../fontforge/build/lib/*.a ----------------------
 VENDOR_FF_LIB="$PDF2_SRC/../fontforge/build/lib"
 mkdir -p "$VENDOR_FF_LIB"
 
 copy_ff() {
-  # $1 base name in MSYS2 (fontforge|gutils|gunicode|uninameslist), $2 target name
+  # $1 = base name to glob in /mingw64/lib (fontforge|gutils|gunicode|uninameslist)
+  # $2 = target filename in vendor dir
   local base="$1" out="$2"
   local src
-  src="$(find_lib "" "$base")" || return 0  # skip if absent
+  src="$(find_lib_glob "" "$base")" || { echo "WARN: $base import lib not found; continuing"; return 0; }
   cp -f "$src" "$VENDOR_FF_LIB/$out"
 }
 
-# MSYS2 provides import libs named libfontforge.dll.a, libgutils.dll.a, etc.
-# We rename them to lib*.a so pdf2htmlEX's CMake targets match.
-copy_ff fontforge      libfontforge.a
-copy_ff gutils         libgutils.a
-copy_ff gunicode       libgunicode.a
-copy_ff uninameslist   libuninameslist.a
+# MSYS2 names may be versioned (e.g. libfontforge-2.dll.a); globbing handles it
+copy_ff fontforge     libfontforge.a
+copy_ff gutils        libgutils.a
+copy_ff gunicode      libgunicode.a
+copy_ff uninameslist  libuninameslist.a
 
-# Minimal test stub & cmake minimum normalization
+# ---- CMake normalize + tests stub --------------------------------------------
 if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
   mkdir -p "$PDF2_SRC/test"
   printf '%s\n' '#!/usr/bin/env @PYTHON@' 'print("tests disabled")' > "$PDF2_SRC/test/test.py.in"
