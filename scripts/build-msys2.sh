@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# Toolchain: use MinGW compilers + Ninja
+# Toolchain (MinGW + Ninja)
 export PATH=/mingw64/bin:/usr/bin:$PATH
 export CC=/mingw64/bin/gcc.exe
 export CXX=/mingw64/bin/g++.exe
@@ -19,7 +19,7 @@ $CC --version | head -1
 pkg-config --version
 
 trap 'echo "---- CMake logs ----";
-      find "$PWD" -name CMakeError.log -o -name CMakeOutput.log -print -exec sed -n "1,120p" "{}" \; || true' ERR
+      find "$PWD" -name CMakeError.log -o -name CMakeOutput.log -print -exec sed -n "1,160p" "{}" \; || true' ERR
 
 PREFIX=/mingw64
 ROOT="$PWD"
@@ -30,12 +30,9 @@ DIST="$ROOT/dist"
 POPLER_VER="0.89.0"   # pdf2htmlEX target
 mkdir -p "$BUILD" "$STAGE" "$DIST"
 
-# ---------------------------------------------------------------------------------
-# We now **skip building FontForge** and use the prebuilt MSYS2 package instead.
-# It provides headers + import libs under /mingw64/{include,lib}.
-# ---------------------------------------------------------------------------------
+# We use prebuilt FontForge from MSYS2 (headers+libs), avoids flaky source build.
 
-# ---------- Poppler (with unstable/xpdf headers) ----------
+# ---------- Poppler (with xpdf/unstable headers) ----------
 echo "=== Poppler ${POPLER_VER} ==="
 cd "$BUILD"
 POPLER_TARBALL="poppler-${POPLER_VER}.tar.xz"
@@ -48,7 +45,8 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_UNSTABLE_API_ABI_HEADERS=ON \
   -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF -DENABLE_GLIB=OFF \
-  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF
+  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
@@ -62,7 +60,8 @@ cmake -S pdf2htmlEX -B pdf2htmlEX/build \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${PREFIX}" \
   -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
-  -DENABLE_SVG=ON
+  -DENABLE_SVG=ON \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build pdf2htmlEX/build --parallel
 cmake --install pdf2htmlEX/build
 
@@ -70,8 +69,6 @@ cmake --install pdf2htmlEX/build
 echo "=== Stage portable bundle ==="
 mkdir -p "${STAGE}/bin" "${STAGE}/share"
 cp -v "${PREFIX}/bin/pdf2htmlEX.exe" "${STAGE}/bin/"
-
-# runtime data (if installed)
 [ -d "${PREFIX}/share/pdf2htmlEX" ] && cp -Rv "${PREFIX}/share/pdf2htmlEX" "${STAGE}/share/" || true
 [ -d "${PREFIX}/share/poppler"   ] && cp -Rv "${PREFIX}/share/poppler"   "${STAGE}/share/" || true
 
