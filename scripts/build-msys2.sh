@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# Toolchain (MinGW + Ninja)
+# Use MinGW toolchain + Ninja
 export PATH=/mingw64/bin:/usr/bin:$PATH
 export CC=/mingw64/bin/gcc.exe
 export CXX=/mingw64/bin/g++.exe
@@ -27,12 +27,16 @@ BUILD="$ROOT/.build"
 STAGE="$ROOT/stage"
 DIST="$ROOT/dist"
 
-POPLER_VER="0.89.0"   # pdf2htmlEX target
+POPLER_VER="0.89.0"          # official target for pdf2htmlEX v0.18.8.rc1
+PDF2_TAG="v0.18.8.rc1"       # build this tag to ensure CMakeLists is present
+
 mkdir -p "$BUILD" "$STAGE" "$DIST"
 
-# We use prebuilt FontForge from MSYS2 (headers+libs), avoids flaky source build.
+# --------------------------------------------------------------------
+# We use prebuilt FontForge (MSYS2 package). No fragile source build.
+# --------------------------------------------------------------------
 
-# ---------- Poppler (with xpdf/unstable headers) ----------
+# ---------- Poppler (with "xpdf/unstable" headers) ----------
 echo "=== Poppler ${POPLER_VER} ==="
 cd "$BUILD"
 POPLER_TARBALL="poppler-${POPLER_VER}.tar.xz"
@@ -50,20 +54,24 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# ---------- pdf2htmlEX ----------
-echo "=== pdf2htmlEX (master) ==="
+# ---------- pdf2htmlEX (release tag) ----------
+echo "=== pdf2htmlEX ${PDF2_TAG} ==="
 cd "$BUILD"
-rm -rf pdf2htmlEX
-git clone --depth=1 https://github.com/pdf2htmlEX/pdf2htmlEX.git
-cmake -S pdf2htmlEX -B pdf2htmlEX/build \
+PDF2_TARBALL="pdf2htmlEX-${PDF2_TAG}.tar.gz"
+[ -f "$PDF2_TARBALL" ] || curl -L -o "$PDF2_TARBALL" "https://github.com/pdf2htmlEX/pdf2htmlEX/archive/refs/tags/${PDF2_TAG}.tar.gz"
+rm -rf "pdf2htmlEX-src"
+mkdir "pdf2htmlEX-src"
+tar -xf "$PDF2_TARBALL" -C "pdf2htmlEX-src" --strip-components=1
+
+cmake -S "pdf2htmlEX-src" -B "pdf2htmlEX-src/build" \
   -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${PREFIX}" \
-  -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="${PREFIX}" -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_SVG=ON \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-cmake --build pdf2htmlEX/build --parallel
-cmake --install pdf2htmlEX/build
+cmake --build "pdf2htmlEX-src/build" --parallel
+cmake --install "pdf2htmlEX-src/build"
 
 # ---------- Stage portable bundle ----------
 echo "=== Stage portable bundle ==="
@@ -72,7 +80,7 @@ cp -v "${PREFIX}/bin/pdf2htmlEX.exe" "${STAGE}/bin/"
 [ -d "${PREFIX}/share/pdf2htmlEX" ] && cp -Rv "${PREFIX}/share/pdf2htmlEX" "${STAGE}/share/" || true
 [ -d "${PREFIX}/share/poppler"   ] && cp -Rv "${PREFIX}/share/poppler"   "${STAGE}/share/" || true
 
-# copy dependent DLLs
+# collect dependent DLLs
 ntldd -R "${STAGE}/bin/pdf2htmlEX.exe" \
   | awk '/=>/ {print $3}' \
   | sed -e 's#\\#/#g' \
