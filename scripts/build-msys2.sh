@@ -27,7 +27,7 @@ $CC --version | head -1
 pkg-config --version
 
 # -------------------------------------------------------------------
-# Ensure tools/libs (NO trailing comments on continued lines)
+# Ensure tools/libs (no trailing comments on backslash lines)
 # -------------------------------------------------------------------
 pacman -Sy --noconfirm
 pacman -S --noconfirm --needed \
@@ -111,7 +111,6 @@ synth_import_from_dll() {
 }
 
 ensure_ff_required() {
-  # must produce an import lib at $2 or exit
   local base="$1" out="$2"
   if src="$(find_lib_glob "" "$base")"; then
     cp -f "$src" "$out"; return 0
@@ -124,7 +123,6 @@ ensure_ff_required() {
 }
 
 ensure_ff_optional() {
-  # try to produce an import lib at $2, but don't fail if unavailable
   local base="$1" out="$2"
   if src="$(find_lib_glob "" "$base")"; then
     cp -f "$src" "$out"; return 0
@@ -133,7 +131,7 @@ ensure_ff_optional() {
 }
 
 # -------------------------------------------------------------------
-# 2) pdf2htmlEX sources + vendor libs
+# 2) pdf2htmlEX sources + vendor libs/headers
 # -------------------------------------------------------------------
 PDF2_DIR="$BUILD/pdf2htmlEX-src"
 [ -d "$PDF2_DIR" ] || git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git "$PDF2_DIR"
@@ -159,20 +157,23 @@ cp -f "$GLIB_SRC" "$VENDOR_GLIB_SUB/libpoppler-glib.a"
 cp -f "$GLIB_SRC" "$VENDOR_POP_ROOT/libpoppler-glib.a"
 [ -n "${CPP_SRC:-}" ] && { cp -f "$CPP_SRC" "$VENDOR_CPP_SUB/libpoppler-cpp.a"; cp -f "$CPP_SRC" "$VENDOR_POP_ROOT/libpoppler-cpp.a"; }
 
+# *** NEW: vendor Poppler headers where pdf2htmlEX expects them ***
+VENDOR_POP_HEADERS="$PDF2_SRC/../poppler/poppler"
+mkdir -p "$VENDOR_POP_HEADERS"
+# copy the entire installed header tree (contains OutputDev.h, GlobalParams.h, goo/, splash/, etc.)
+cp -r /mingw64/include/poppler/* "$VENDOR_POP_HEADERS/"
+
 # Vendor FontForge layout expected by pdf2htmlEX
 VENDOR_FF_LIB="$PDF2_SRC/../fontforge/build/lib"
 mkdir -p "$VENDOR_FF_LIB"
 
 # REQUIRED: libfontforge import lib
-ensure_ff_required   fontforge   "$VENDOR_FF_LIB/libfontforge.a"
-
-# OPTIONAL: libuninameslist (present in MSYS2; keep it)
-ensure_ff_optional   uninameslist "$VENDOR_FF_LIB/libuninameslist.a"
-
-# DO NOT require gutils/gunicode on modern MSYS2 (libfontforge depends on them internally)
-# If they exist, we'll copy them; otherwise we continue.
-ensure_ff_optional   gutils      "$VENDOR_FF_LIB/libgutils.a"
-ensure_ff_optional   gunicode    "$VENDOR_FF_LIB/libgunicode.a"
+ensure_ff_required   fontforge     "$VENDOR_FF_LIB/libfontforge.a"
+# OPTIONAL: keep uninameslist if available
+ensure_ff_optional   uninameslist  "$VENDOR_FF_LIB/libuninameslist.a"
+# DO NOT require gutils/gunicode on modern MSYS2
+ensure_ff_optional   gutils        "$VENDOR_FF_LIB/libgutils.a"
+ensure_ff_optional   gunicode      "$VENDOR_FF_LIB/libgunicode.a"
 
 # tests stub + normalize ancient cmake mins
 if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
