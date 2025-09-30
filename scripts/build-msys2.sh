@@ -47,12 +47,10 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# Build tree root for convenience
 POP_BUILD="poppler-${POPLER_VER}/build"
 
-# Helper: find a poppler lib (prefers static .a, falls back to .dll.a) and echo path
+# Helper: locate a lib (.a or .dll.a) either in build tree or /mingw64/lib
 find_poppler_lib() {
-  # $1 = subdir in build tree (poppler|glib|cpp), $2 = base name (poppler|poppler-glib|poppler-cpp)
   local sub="$1" base="$2"
   local candidates=(
     "$BUILD/$POP_BUILD/$sub/lib${base}.a"
@@ -61,37 +59,43 @@ find_poppler_lib() {
     "/mingw64/lib/lib${base}.dll.a"
   )
   for f in "${candidates[@]}"; do
-    if [ -f "$f" ]; then
-      echo "$f"
-      return 0
-    fi
+    [ -f "$f" ] && { echo "$f"; return 0; }
   done
   return 1
 }
 
 # ---------------- 2) pdf2htmlEX sources ---------------------------------------
 PDF2_DIR="$BUILD/pdf2htmlEX-src"
-if [ ! -d "$PDF2_DIR" ]; then
-  git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git "$PDF2_DIR"
-fi
+[ -d "$PDF2_DIR" ] || git clone --depth 1 https://github.com/pdf2htmlEX/pdf2htmlEX.git "$PDF2_DIR"
+
 PDF2_SRC="$PDF2_DIR"
 [ -f "$PDF2_SRC/CMakeLists.txt" ] || PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 
-# Vendor layout expected by historical CMake in pdf2htmlEX:
-VENDOR_POP="$PDF2_SRC/../poppler/build"
-mkdir -p "$VENDOR_POP/poppler" "$VENDOR_POP/glib" "$VENDOR_POP/cpp"
+# Expected vendor layout(s)
+VENDOR_ROOT="$PDF2_SRC/../poppler/build"
+VENDOR_POP="$VENDOR_ROOT/poppler"
+VENDOR_GLIB="$VENDOR_ROOT/glib"
+VENDOR_CPP="$VENDOR_ROOT/cpp"
+mkdir -p "$VENDOR_ROOT" "$VENDOR_POP" "$VENDOR_GLIB" "$VENDOR_CPP"
 
-# Discover + copy/rename libs so paths match what pdf2htmlEX looks for
-POP_CORE_SRC="$(find_poppler_lib poppler poppler)"
-POP_GLIB_SRC="$(find_poppler_lib glib    poppler-glib)"
-# cpp is optional; only copy if present
-POP_CPP_SRC="$(find_poppler_lib cpp     poppler-cpp || true)"
+# Discover libraries and copy to ALL expected places (root + subdir), renaming to *.a
+CORE_SRC="$(find_poppler_lib poppler poppler)"
+GLIB_SRC="$(find_poppler_lib glib poppler-glib)"
+CPP_SRC="$(find_poppler_lib cpp poppler-cpp || true)"
 
-cp -f "$POP_CORE_SRC" "$VENDOR_POP/poppler/libpoppler.a"
-cp -f "$POP_GLIB_SRC" "$VENDOR_POP/glib/libpoppler-glib.a"
-[ -n "${POP_CPP_SRC:-}" ] && cp -f "$POP_CPP_SRC" "$VENDOR_POP/cpp/libpoppler-cpp.a"
+# core
+cp -f "$CORE_SRC" "$VENDOR_POP/libpoppler.a"
+cp -f "$CORE_SRC" "$VENDOR_ROOT/libpoppler.a"
+# glib
+cp -f "$GLIB_SRC" "$VENDOR_GLIB/libpoppler-glib.a"
+cp -f "$GLIB_SRC" "$VENDOR_ROOT/libpoppler-glib.a"
+# cpp (optional)
+if [ -n "${CPP_SRC:-}" ]; then
+  cp -f "$CPP_SRC" "$VENDOR_CPP/libpoppler-cpp.a"
+  cp -f "$CPP_SRC" "$VENDOR_ROOT/libpoppler-cpp.a"
+fi
 
-# Minimal test stub & CMake minimum normalization
+# Minimal test stub & cmake minimum normalization
 if [ ! -f "$PDF2_SRC/test/test.py.in" ]; then
   mkdir -p "$PDF2_SRC/test"
   printf '%s\n' '#!/usr/bin/env @PYTHON@' 'print("tests disabled")' > "$PDF2_SRC/test/test.py.in"
@@ -111,7 +115,7 @@ cmake --build "$PDF2_SRC/build" --parallel
 # ---------------- 4) Package portable zip -------------------------------------
 cp -f "$PDF2_SRC/build/pdf2htmlEX.exe" "$STAGE/"
 
-# Bring DLLs next to exe
+# Add dependent DLLs next to the EXE
 ntldd -R "$STAGE/pdf2htmlEX.exe" | awk '/=>/ {print $3}' | sed 's#\\#/#g' | sort -u \
   | while read -r dll; do [ -f "$dll" ] && cp -n "$dll" "$STAGE/" || true; done
 
