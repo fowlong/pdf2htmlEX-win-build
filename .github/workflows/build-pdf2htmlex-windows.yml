@@ -21,7 +21,6 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          # NOTE: package names only (space/newline separated)
           install: >-
             base-devel
             git
