@@ -27,7 +27,7 @@ BUILD="$ROOT/.build"
 STAGE="$ROOT/stage"
 DIST="$ROOT/dist"
 
-POPLER_VER="0.89.0"      # good match for pdf2htmlEX v0.18.8.rc1
+POPLER_VER="0.89.0"      # known-good for pdf2htmlEX v0.18.8.rc1
 PDF2_TAG="v0.18.8.rc1"
 
 mkdir -p "$BUILD" "$STAGE" "$DIST"
@@ -50,13 +50,12 @@ cmake -S "poppler-${POPLER_VER}" -B "poppler-${POPLER_VER}/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_UNSTABLE_API_ABI_HEADERS=ON \
   -DENABLE_UTILS=OFF -DENABLE_GTK_DOC=OFF \
-  -DENABLE_GLIB=ON \        # <— enable poppler-glib so pdf2htmlEX can link
-  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  -DENABLE_GLIB=ON \
+  -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_GTK_TESTS=OFF
 cmake --build "poppler-${POPLER_VER}/build" --parallel
 cmake --install "poppler-${POPLER_VER}/build"
 
-# Verify pkg-config can see poppler-glib (guards against the previous error)
+# Verify poppler-glib is visible
 pkg-config --modversion poppler-glib
 
 # ---------- pdf2htmlEX (release tag) ------------------------------------------
@@ -82,7 +81,13 @@ else
   exit 1
 fi
 
-# Some tags configure a test template; disable tests and provide a stub.
+# ---- Patch legacy cmake_minimum_required to avoid 3.5 gate -------------------
+# (Apply to all nested CMakeLists.txt so subdirs don't trip the error.)
+while IFS= read -r -d '' f; do
+  sed -i -E 's/cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' "$f"
+done < <(find "$PDF2_SRC" -name CMakeLists.txt -print0)
+
+# ---- Disable tests + provide a stub if template is missing -------------------
 if [ ! -f "${PDF2_SRC}/test/test.py.in" ]; then
   echo "Synthesizing placeholder test.py.in (tests disabled)…"
   mkdir -p "${PDF2_SRC}/test"
@@ -97,15 +102,13 @@ fi
 echo "Using source dir: ${PDF2_SRC}"
 ls -al "${PDF2_SRC}"
 
-# Tell CMake to use the installed (pkg-config visible) poppler/glib
 cmake -S "${PDF2_SRC}" -B "${PDF2_SRC}/build" \
   -G "$CMAKE_GENERATOR" -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_RC_COMPILER="$RC" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="${PREFIX}" -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
   -DENABLE_SVG=ON \
-  -DBUILD_TESTING=OFF -DENABLE_TESTS=OFF -DPDF2HTMLEX_BUILD_TESTS=OFF \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  -DBUILD_TESTING=OFF -DENABLE_TESTS=OFF -DPDF2HTMLEX_BUILD_TESTS=OFF
 
 cmake --build "${PDF2_SRC}/build" --parallel
 cmake --install "${PDF2_SRC}/build"
