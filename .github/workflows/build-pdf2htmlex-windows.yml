@@ -1,10 +1,9 @@
-name: build-pdf2htmlex-windows
+name: build-pdf2htmlEX-windows
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ "v*" ]
-  pull_request: {}
+    branches: [ main ]
+  pull_request:
 
 jobs:
   build:
@@ -17,46 +16,44 @@ jobs:
       - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
           update: true
-          cache: true
+          msystem: MINGW64
           install: >-
             base-devel
             git
             curl
-            zip
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
+            unzip
+            wget
+            tar
+            patch
+            cmake
+            ninja
+            pkgconf
+            # runtime/build deps used by poppler/pdf2htmlEX
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cairo
             mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-fontconfig
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-libpng
             mingw-w64-x86_64-libjpeg-turbo
             mingw-w64-x86_64-openjpeg2
             mingw-w64-x86_64-libtiff
-            mingw-w64-x86_64-libxml2
-            mingw-w64-x86_64-glib2
             mingw-w64-x86_64-lcms2
+            mingw-w64-x86_64-libxml2
             mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-gettext
-            mingw-w64-x86_64-libiconv
-            mingw-w64-x86_64-libltdl
-            mingw-w64-x86_64-libspiro
-            mingw-w64-x86_64-poppler-data
-            mingw-w64-x86_64-ntldd
+            mingw-w64-x86_64-libcurl
             mingw-w64-x86_64-fontforge
-            mingw-w64-x86_64-libuninameslist
-            mingw-w64-x86_64-qt5       # present = painless CMake resolution
 
-      - name: Build (MSYS2 bash)
+      - name: Build all (MSYS2 bash)
         shell: msys2 {0}
-        run: bash ./scripts/build-msys2.sh
+        run: |
+          set -euxo pipefail
+          bash ./scripts/build-msys2.sh
 
       - name: Upload artifact (portable zip)
         uses: actions/upload-artifact@v4
         with:
           name: pdf2htmlEX-windows-portable
-          path: dist/pdf2htmlEX-windows-portable.zip
-          if-no-files-found: error
+          path: dist/*
