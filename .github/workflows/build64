@@ -1,0 +1,80 @@
+name: Cross-compile pdf2htmlEX for Windows (x86_64)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake bison flex g++ gperf \
+            libtool libtool-bin make gettext texinfo unzip wget \
+            p7zip-full python3 cmake ninja-build pkg-config file
+
+      - name: Fetch MXE
+        run: |
+          git clone https://github.com/mxe/mxe.git
+
+      # Build MXE for 64-bit static Windows target and only the deps we need.
+      - name: Build MXE toolchain & libs (x86_64 static)
+        working-directory: mxe
+        run: |
+          make MXE_TARGETS='x86_64-w64-mingw32.static' \
+               poppler fontforge \
+               -j"$(nproc)"
+
+      # Build pdf2htmlEX (64-bit, static) using MXE's toolchain.
+      # By default we use the actively maintained community fork which
+      # builds cleanly with newer Poppler stacks from MXE.
+      - name: Build pdf2htmlEX
+        env:
+          CROSS: x86_64-w64-mingw32.static
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/mxe/usr/bin:${PATH}"
+
+          # Get a compatible source (community fork tends to match MXE Poppler)
+          git clone https://github.com/pdf2htmlEX/pdf2htmlEX.git pdf2htmlEX-src
+          cd pdf2htmlEX-src
+
+          mkdir build && cd build
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${GITHUB_WORKSPACE}/mxe/usr/${CROSS}/share/cmake/mxe-conf.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/pdf2htmlEX-install"
+
+          ninja pdf2htmlEX
+
+          mkdir -p "${GITHUB_WORKSPACE}/artifact"
+          cp src/pdf2htmlEX.exe "${GITHUB_WORKSPACE}/artifact/"
+
+      # Sanity check that the produced exe is 64-bit (PE32+ x86-64)
+      - name: Verify 64-bit EXE
+        run: |
+          file artifact/pdf2htmlEX.exe || true
+          echo "::group::objdump header"
+          "${GITHUB_WORKSPACE}/mxe/usr/bin/x86_64-w64-mingw32.static-objdump" -f artifact/pdf2htmlEX.exe || true
+          echo "::endgroup::"
+
+      # Zip is optional; uploading the exe directly also works.
+      - name: Package artifact (zip)
+        run: |
+          cd artifact
+          zip -9r ../pdf2htmlEX-windows-x86_64-static.zip pdf2htmlEX.exe
+
+      - name: Upload Windows binary (non-deprecated)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf2htmlEX-windows-x86_64-static
+          path: |
+            artifact/pdf2htmlEX.exe
+            pdf2htmlEX-windows-x86_64-static.zip
