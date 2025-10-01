@@ -3,7 +3,8 @@ name: build-pdf2htmlex-windows-x64
 on:
   workflow_dispatch:
   push:
-    tags: [ 'v*' ]
+    tags:
+      - 'v*'
 
 jobs:
   build-windows-x64:
@@ -11,6 +12,10 @@ jobs:
     env:
       MSYSTEM: UCRT64
       PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
+      # Pinned upstream lib versions known to work with pdf2htmlEX CMake (vendored layout)
+      POPPLER_VER: '0.89.0'
+      POPPLER_DATA_VER: '0.4.9'
+      FONTFORGE_VER: '20220308'
     steps:
       - name: Checkout this repo (workflow + scripts)
         uses: actions/checkout@v4
@@ -20,13 +25,15 @@ jobs:
         with:
           repository: pdf2htmlEX/pdf2htmlEX
           path: upstream
-          # For reproducible builds you can pin:
-          # ref: v0.18.8.rc1
+          # For reproducible builds, pin a known-good tag/commit, e.g.:
+          # ref: continuous
 
-      - name: Verify source layout (Git-Bash)
+      # ✅ Verify we have the expected source layout before MSYS2
+      - name: Verify source layout
         shell: bash
         run: |
-          test -f upstream/pdf2htmlEX/CMakeLists.txt || { echo 'Missing CMakeLists in upstream/pdf2htmlEX'; ls -la upstream; ls -la upstream/pdf2htmlEX || true; exit 1; }
+          set -euxo pipefail
+          test -f upstream/pdf2htmlEX/CMakeLists.txt || { echo 'CMakeLists not found at upstream/pdf2htmlEX'; ls -la upstream; exit 1; }
 
       - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
@@ -34,65 +41,152 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
+            base-devel
+            wget
+            zip
+            unzip
+            tar
+            p7zip
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkg-config
-            mingw-w64-ucrt-x86_64-poppler
-            mingw-w64-ucrt-x86_64-poppler-data
+            # Poppler build deps
             mingw-w64-ucrt-x86_64-cairo
-            mingw-w64-ucrt-x86_64-fontforge
-            mingw-w64-ucrt-x86_64-libspiro
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-harfbuzz
+            mingw-w64-ucrt-x86_64-graphite2
             mingw-w64-ucrt-x86_64-libjpeg-turbo
             mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-libtiff
+            mingw-w64-ucrt-x86_64-openjpeg2
+            mingw-w64-ucrt-x86_64-lcms2
+            mingw-w64-ucrt-x86_64-nss
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-libcurl
+            # FontForge build deps
             mingw-w64-ucrt-x86_64-freetype
             mingw-w64-ucrt-x86_64-fontconfig
             mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-libspiro
+            mingw-w64-ucrt-x86_64-libuninameslist
+            mingw-w64-ucrt-x86_64-woff2
+            mingw-w64-ucrt-x86_64-potrace
             mingw-w64-ucrt-x86_64-ntldd
 
       - name: Toolchain sanity check
         shell: msys2 {0}
         run: |
+          set -euxo pipefail
           gcc --version
-          pkg-config --modversion poppler || true
-          pkg-config --modversion poppler-cpp || true
+          cmake --version
+          ninja --version
 
-      # Robust fix for your current configure error
-      - name: Patch CMake policy floor (CMake >=3.5)
+      # =============================
+      # Build third-party libs (vendored layout expected by pdf2htmlEX CMake)
+      # =============================
+      - name: Fetch Poppler, Poppler-data, FontForge sources (pinned)
+        shell: msys2 {0}
+        working-directory: upstream
+        run: |
+          set -euxo pipefail
+
+          # Clean any previous partials
+          rm -rf poppler poppler-data fontforge || true
+
+          # Poppler
+          curl -L "https://poppler.freedesktop.org/poppler-${POPPLER_VER}.tar.xz" -o poppler.tar.xz
+          tar -xf poppler.tar.xz
+          mv "poppler-${POPPLER_VER}" poppler
+          mkdir -p poppler/build
+
+          # Poppler-data (installed to share dir used at runtime)
+          curl -L "https://poppler.freedesktop.org/poppler-data-${POPPLER_DATA_VER}.tar.gz" -o poppler-data.tar.gz
+          tar -xzf poppler-data.tar.gz
+          mv "poppler-data-${POPPLER_DATA_VER}" poppler-data
+
+          # FontForge
+          curl -L "https://github.com/fontforge/fontforge/archive/${FONTFORGE_VER}.tar.gz" -o fontforge.tar.gz
+          tar -xzf fontforge.tar.gz
+          mv "fontforge-${FONTFORGE_VER}" fontforge
+          mkdir -p fontforge/build
+
+      - name: Configure & build Poppler (static, GLib+Cairo, xpdf headers)
+        shell: msys2 {0}
+        working-directory: upstream/poppler/build
+        run: |
+          set -euxo pipefail
+          cmake -G Ninja .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_UTILS=OFF \
+            -DENABLE_GTK_DOC=OFF \
+            -DENABLE_QT5=OFF -DENABLE_QT6=OFF -DENABLE_CPP=OFF \
+            -DENABLE_GLIB=ON -DENABLE_CAIRO=ON \
+            -DENABLE_NSS3=OFF \
+            -DENABLE_LIBCURL=OFF \
+            -DENABLE_LIBOPENJPEG=ON \
+            -DENABLE_DCTDECODER=libjpeg \
+            -DENABLE_CMS=lcms2 \
+            -DENABLE_ZLIB=ON \
+            -DENABLE_ZLIB_UNCOMPRESS=OFF \
+            -DENABLE_XPDF_HEADERS=ON
+          cmake --build . --config Release -j2
+
+      - name: Configure & build FontForge (static lib only, no GUI)
+        shell: msys2 {0}
+        working-directory: upstream/fontforge/build
+        run: |
+          set -euxo pipefail
+          cmake -G Ninja .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_GUI=OFF \
+            -DENABLE_PYTHON_SCRIPTING=OFF \
+            -DENABLE_FONTFORGE_EXE=OFF \
+            -DENABLE_DOCS=OFF
+          cmake --build . --config Release -j2
+
+      # Patch old cmake policy in upstream sources to satisfy CMake >=3.5
+      - name: Patch cmake_minimum_required in pdf2htmlEX CMakeLists
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           sed -i 's/^[[:space:]]*cmake_minimum_required(.*)$/cmake_minimum_required(VERSION 3.5)/I' upstream/pdf2htmlEX/CMakeLists.txt || true
           grep -qi '^[[:space:]]*cmake_minimum_required' upstream/pdf2htmlEX/CMakeLists.txt || sed -i '1i cmake_minimum_required(VERSION 3.5)' upstream/pdf2htmlEX/CMakeLists.txt
 
-      - name: Configure (CMake + Ninja)
+      - name: Configure pdf2htmlEX (use vendored build layout)
         shell: msys2 {0}
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"   # modern CMake compatibility shim
         run: |
+          set -euxo pipefail
           cmake -S upstream/pdf2htmlEX -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/ucrt64 \
-            -DFONTFORGE_INCLUDE_DIR=/ucrt64/include/fontforge \
-            -DFONTFORGE_LIBRARY=/ucrt64/lib/libfontforge.dll.a \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/_install" \
             -Wno-dev
 
-      - name: Build
+      - name: Build pdf2htmlEX
         shell: msys2 {0}
-        run: cmake --build build --config Release -j 2
+        run: |
+          set -euxo pipefail
+          cmake --build build --config Release -j2
 
       - name: Install to staging
         shell: msys2 {0}
-        run: cmake --install build --prefix "${GITHUB_WORKSPACE}/_install"
+        run: |
+          set -euxo pipefail
+          cmake --install build --prefix "${GITHUB_WORKSPACE}/_install"
 
       - name: Smoke-test CLI
         shell: msys2 {0}
-        run: '"${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe" --version || true'
+        run: |
+          set -euxo pipefail
+          "${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe" --version || true
 
       - name: Bundle exe + runtime DLLs + resources
         shell: msys2 {0}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p dist/bin dist/share
 
           EXE="${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe"
@@ -100,21 +194,22 @@ jobs:
 
           cp "$EXE" dist/bin/
 
+          # Dependent DLLs from UCRT64
           pushd dist/bin >/dev/null
           ntldd -R "$(basename "$EXE")" | awk '/\/(ucrt64|mingw64)\// {print $3}' | xargs -I{} cp -u {} .
           popd >/dev/null
 
+          # pdf2htmlEX assets
           if [ -d "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX" ]; then
             mkdir -p dist/share/pdf2htmlEX
             cp -r "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX/"* dist/share/pdf2htmlEX/
           fi
 
-          for d in /ucrt64/share/poppler /mingw64/share/poppler; do
-            if [ -d "$d" ]; then
-              mkdir -p dist/share/poppler
-              cp -r "$d"/* dist/share/poppler/ || true
-            fi
-          done
+          # Poppler data (cmaps, etc.) from the tarball we staged earlier
+          if [ -d "upstream/poppler-data" ]; then
+            mkdir -p dist/share/poppler
+            cp -r upstream/poppler-data/* dist/share/poppler/
+          fi
 
           7z a -tzip "${GITHUB_WORKSPACE}/pdf2htmlEX-windows-x64.zip" ./dist/*
 
@@ -130,3 +225,13 @@ jobs:
         with:
           files: pdf2htmlEX-windows-x64.zip
           generate_release_notes: true
+
+# Notes for future maintainers
+# - The upstream CMake expects a vendored layout: ./poppler/build and ./fontforge/build
+#   containing static libraries, hence we build them from pinned sources before configuring
+#   pdf2htmlEX. This fixes the previous ninja error where libpoppler-glib.a under poppler/build
+#   could not be found.
+# - UCRT64 is used for better ABI compatibility on GitHub-hosted Windows runners.
+# - If you ever want to switch to system libraries instead of vendored builds, you will need
+#   to modify upstream/pdf2htmlEX/CMakeLists.txt; simply passing FONTFORGE_* or POPPLER_*
+#   variables is ignored by upstream at the time of writing.
