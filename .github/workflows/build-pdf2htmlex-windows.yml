@@ -8,52 +8,64 @@ jobs:
   build-windows:
     runs-on: ubuntu-latest
 
+    # (Optional) Increase default job timeout if your org allows it
+    # timeout-minutes: 360
+
     steps:
-    - name: Checkout source
-      uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install system packages
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y autoconf automake bison flex g++ gperf \
-          libtool libtool-bin make gettext texinfo unzip wget \
-          p7zip-full python3 cmake ninja-build
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake bison flex g++ gperf \
+            libtool libtool-bin make gettext texinfo unzip wget \
+            p7zip-full python3 cmake ninja-build pkg-config
 
-    - name: Clone and build MXE (cross-compiler)
-      run: |
-        git clone https://github.com/mxe/mxe.git
-        cd mxe
-        make MXE_TARGETS='x86_64-w64-mingw32.static' \
-             qtbase cairo freetype fontconfig jpeg libpng zlib \
-             glib poppler fontforge \
-             -j$(nproc)
+      - name: Fetch MXE
+        run: |
+          git clone https://github.com/mxe/mxe.git
 
-    - name: Build pdf2htmlEX
-      run: |
-        export PATH=$PWD/mxe/usr/bin:$PATH
-        export CROSS="x86_64-w64-mingw32.static"
+      # Build only what we need; MXE will pull transitive deps itself.
+      # poppler + fontforge are the key ones pdf2htmlEX depends on.
+      - name: Build MXE toolchain & libs (Windows static x64)
+        working-directory: mxe
+        run: |
+          make MXE_TARGETS='x86_64-w64-mingw32.static' \
+               poppler fontforge \
+               -j"$(nproc)"
 
-        # Clone and checkout a compatible version
-        git clone https://github.com/coolwanglu/pdf2htmlEX.git
-        cd pdf2htmlEX
-        git checkout tags/0.14.6
+      - name: Build pdf2htmlEX (cross, static)
+        env:
+          CROSS: x86_64-w64-mingw32.static
+        run: |
+          # Put MXE cross tools on PATH
+          export PATH="${GITHUB_WORKSPACE}/mxe/usr/bin:${PATH}"
 
-        mkdir build
-        cd build
+          # Clone original project (0.14.6 is widely used & stable)
+          git clone https://github.com/coolwanglu/pdf2htmlEX.git
+          cd pdf2htmlEX
+          git checkout tags/0.14.6
 
-        cmake .. \
-          -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/mxe/usr/$CROSS/share/cmake/mxe-conf.cmake \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX=../install
+          # Configure with MXE toolchain
+          mkdir build
+          cd build
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${GITHUB_WORKSPACE}/mxe/usr/${CROSS}/share/cmake/mxe-conf.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/pdf2htmlEX/install"
 
-        ninja pdf2htmlEX
+          # Build the exe
+          ninja pdf2htmlEX
 
-        mkdir -p output
-        cp src/pdf2htmlEX.exe output/
+          # Stage artifact
+          mkdir -p "${GITHUB_WORKSPACE}/artifact"
+          cp src/pdf2htmlEX.exe "${GITHUB_WORKSPACE}/artifact/"
 
-    - name: Upload Windows binary
-      uses: actions/upload-artifact@v3
-      with:
-        name: pdf2htmlEX-windows
-        path: pdf2htmlEX/build/output/pdf2htmlEX.exe
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf2htmlEX-windows-x86_64-static
+          path: artifact/pdf2htmlEX.exe
