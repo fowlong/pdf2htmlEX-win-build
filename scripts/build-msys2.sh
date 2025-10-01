@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# -------- toolchain --------
+# ---------- toolchain ----------
 export PATH=/mingw64/bin:/usr/bin:$PATH
 export CC=/mingw64/bin/gcc.exe
 export CXX=/mingw64/bin/g++.exe
 export RC=/mingw64/bin/windres.exe
-export CMAKE_GENERATOR="Ninja"
+export CMAKE_GENERATOR=Ninja
 export CMAKE_MAKE_PROGRAM=/mingw64/bin/ninja.exe
-# make warnings non-fatal for Poppler API drift
+# silence overload hiding noise; we don’t need "using OutputDev::..." to build
 export CXXFLAGS="${CXXFLAGS:-} -O2 -DNDEBUG -Wno-overloaded-virtual"
 
-# -------- deps --------
+# ---------- deps ----------
 pacman -Syu --noconfirm
 pacman -S --noconfirm --needed \
   mingw-w64-x86_64-poppler \
@@ -25,7 +25,7 @@ pacman -S --noconfirm --needed \
   mingw-w64-x86_64-ntldd \
   cmake ninja git zip curl
 
-# -------- sources --------
+# ---------- sources ----------
 ROOT="$(pwd)"
 BUILD="$ROOT/.build"
 PDF2_DIR="$BUILD/pdf2htmlEX-src"
@@ -34,7 +34,7 @@ PDF2_DIR="$BUILD/pdf2htmlEX-src"
 PDF2_SRC="$PDF2_DIR"
 [ -f "$PDF2_SRC/CMakeLists.txt" ] || PDF2_SRC="$PDF2_DIR/pdf2htmlEX"
 
-# -------- vendor Poppler (libs + headers) --------
+# ---------- vendor Poppler headers & import libs ----------
 VENDOR_POP_ROOT="$PDF2_SRC/../poppler/build"
 VENDOR_POP_SUB="$VENDOR_POP_ROOT/poppler"
 VENDOR_GLIB_SUB="$VENDOR_POP_ROOT/glib"
@@ -48,33 +48,31 @@ copy_lib_as_a () { # $1=basename $2=destdir
   elif [ -f "/mingw64/lib/lib${base}.dll.a" ]; then cp -f "/mingw64/lib/lib${base}.dll.a" "$dest/lib${base}.a"
   else echo "ERROR: lib${base}{.a,.dll.a} missing"; exit 1; fi
 }
-
 copy_lib_as_a poppler      "$VENDOR_POP_ROOT"
 copy_lib_as_a poppler      "$VENDOR_POP_SUB"
-copy_lib_as_a poppler-glib "$VENDOR_GLIB_SUB"
-copy_lib_as_a poppler-cpp  "$VENDOR_CPP_SUB"
+copy_lib_as_a poppler-glib "$VENDOR_GLIB_SUB" || true
+copy_lib_as_a poppler-cpp  "$VENDOR_CPP_SUB"  || true
 
-# headers: mirror the full poppler tree where pdf2htmlEX expects it
+# headers where pdf2htmlEX expects them
 VENDOR_POP_HDR="$PDF2_SRC/../poppler/poppler"
 rm -rf "$VENDOR_POP_HDR"; mkdir -p "$VENDOR_POP_HDR"
 cp -r /mingw64/include/poppler/* "$VENDOR_POP_HDR/"
 
-# -------- FontForge import libs (synthesize if needed) --------
+# ---------- FontForge import libs (synthesize if needed) ----------
 VENDOR_FF_LIB="$PDF2_SRC/../fontforge/build/lib"
 mkdir -p "$VENDOR_FF_LIB"
-
 synth_from_dll () { # $1=basename $2=out.a
   local base="$1" out="$2" dll=""
-  for pat in "/mingw64/bin/lib${base}-"*.dll "/mingw64/bin/lib${base}.dll"; do
-    for f in $pat; do [ -f "$f" ] && { dll="$f"; break; }; done
-    [ -n "$dll" ] && break || true
+  shopt -s nullglob
+  for f in /mingw64/bin/lib${base}-*.dll /mingw64/bin/lib${base}.dll; do
+    [ -f "$f" ] && { dll="$f"; break; }
   done
-  [ -z "$dll" ] && { echo "NOTE: no DLL for ${base}; skipping synth"; return 0; }
+  shopt -u nullglob
+  if [ -z "$dll" ]; then echo "NOTE: no DLL for ${base}; skipping synth"; return 0; fi
   local tmp; tmp="$(mktemp -d)"
   ( set -e; cd "$tmp"; gendef "$dll"; dlltool -d "lib${base}.def" -l "$out" )
   rm -rf "$tmp"
 }
-
 for L in fontforge gutils gunicode uninameslist; do
   if   [ -f "/mingw64/lib/lib${L}.a"     ]; then cp -f "/mingw64/lib/lib${L}.a"     "$VENDOR_FF_LIB/"
   elif [ -f "/mingw64/lib/lib${L}.dll.a" ]; then cp -f "/mingw64/lib/lib${L}.dll.a" "$VENDOR_FF_LIB/lib${L}.a"
@@ -82,52 +80,60 @@ for L in fontforge gutils gunicode uninameslist; do
   fi
 done
 
-# -------- patches/shims --------
-# normalize cmake minimums
+# ---------- light patches / shims ----------
+
+# keep cmake minimums tame to avoid old policy breakage
 find "$PDF2_SRC" -name CMakeLists.txt -print0 | xargs -0 -I{} \
   sed -i -E 's/^[[:space:]]*cmake_minimum_required\s*\([^)]*\)/cmake_minimum_required(VERSION 3.5)/I' {}
 
-# header/source: ensure <optional>
+# missing <optional> in C++20 builds
 for f in "$PDF2_SRC/src/pdf2htmlEX.cc" "$PDF2_SRC/src/HTMLRenderer/font.cc"; do
   [ -f "$f" ] && ! grep -q '^#include <optional>' "$f" && sed -i '1i #include <optional>' "$f" || true
 done
 
-# fix CairoFontEngine::getFont signature (GfxFont* expected)
+# Poppler CairoFontEngine expects GfxFont* (not shared_ptr)
 if [ -f "$PDF2_SRC/src/HTMLRenderer/font.cc" ]; then
   sed -i -E 's/getFont\s*\(\s*std::shared_ptr<\s*GfxFont\s*>\s*\(\s*font\s*\)\s*,/getFont(font,/' \
     "$PDF2_SRC/src/HTMLRenderer/font.cc" || true
 fi
 
-# fix unique_ptr direct-init for FoFiTrueType::load
+# FoFiTrueType::load -> direct-init unique_ptr
 if [ -f "$PDF2_SRC/src/HTMLRenderer/font.cc" ]; then
   sed -i 's/if(std::unique_ptr<FoFiTrueType> fftt = FoFiTrueType::load(/if(std::unique_ptr<FoFiTrueType> fftt(FoFiTrueType::load(/g' \
     "$PDF2_SRC/src/HTMLRenderer/font.cc" || true
 fi
 
-# fix getName().value_or("") (GooString* on Poppler)
+# GooString* -> safe std::string
 if [ -f "$PDF2_SRC/src/HTMLRenderer/font.cc" ]; then
   sed -i -E 's/font->getName\(\)\.value_or\(\s*""\s*\)/std::string(font->getName() ? font->getName()->c_str() : "")/g' \
     "$PDF2_SRC/src/HTMLRenderer/font.cc" || true
 fi
 
-# --- Poppler >= 24.x beginTransparencyGroup(std::array<...>) compat ---
+# ---- Fix header: ensure std::array overload is added AFTER the full legacy decl ----
 HDR="$PDF2_SRC/src/HTMLRenderer/HTMLRenderer.h"
 if [ -f "$HDR" ]; then
-  # include <array> once
+  # need <array> for the overload & adapter
   grep -q '<array>' "$HDR" || sed -i '1i #include <array>' "$HDR"
-  # expose base overloads to avoid hiding warnings
-  awk '
-  /class[ \t]+HTMLRenderer/ {in=1}
-  in && /public:/ && !done { print; print "    using OutputDev::beginTransparencyGroup;"; done=1; next }
-  { print }' "$HDR" > "$HDR.tmp" && mv "$HDR.tmp" "$HDR"
-  # add declaration for the new std::array overload if missing
-  grep -q 'beginTransparencyGroup\s*(GfxState \*state, const std::array<double, 4>&' "$HDR" || \
-    sed -i '/beginTransparencyGroup\s*(GfxState[^\n]*const double \*/a \ \ \ \ virtual void beginTransparencyGroup(GfxState *state, const std::array<double, 4>& bbox, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool forSoftMask);\n' "$HDR" || true
+
+  # 1) remove any previous bad/partial insertions to avoid "virtual outside class"
+  sed -i '/beginTransparencyGroup(.*std::array<double, 4>.*bbox.*)/d' "$HDR" || true
+  sed -i '/beginTransparencyGroup(GfxState \*state, const std::array<double, 4>& bbox, GfxColorSpace \*blendingColorSpace, bool isolated, bool knockout, bool forSoftMask);/d' "$HDR" || true
+
+  # 2) insert the overload AFTER the line that ends the legacy multi-line declaration
+  if ! grep -q 'std::array<double, 4>' "$HDR"; then
+    # append right after the line containing the closing "forSoftMask ... );" of the pointer-based decl
+    sed -i -E '/virtual[[:space:]]+void[[:space:]]+beginTransparencyGroup\([[:space:]]*GfxState[[:space:]]*\*.*const[[:space:]]+double[[:space:]]*\*.*$/,/forSoftMask[[:space:]]*\)[[:space:]]*;[[:space:]]*$/ {
+      /forSoftMask[[:space:]]*\)[[:space:]]*;[[:space:]]*$/ a\
+\ \ \ \ virtual void beginTransparencyGroup(GfxState *state, const std::array<double, 4>& bbox, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool forSoftMask);
+    }' "$HDR"
+  fi
 fi
 
+# ---- Adapter implementation in draw.cc (once) ----
 SRC_DRAW="$PDF2_SRC/src/HTMLRenderer/draw.cc"
 if [ -f "$SRC_DRAW" ]; then
-  grep -q 'beginTransparencyGroup(GfxState \*state, const std::array<double, 4>&' "$SRC_DRAW" || cat >> "$SRC_DRAW" <<'EOF'
+  if ! grep -q 'beginTransparencyGroup(GfxState \*state, const std::array<double, 4>&' "$SRC_DRAW"; then
+    cat >> "$SRC_DRAW" <<'EOF'
 
 // ---- Poppler >= 24.x bbox adapter (forward to the legacy pointer overload) ----
 #include <array>
@@ -141,12 +147,23 @@ void HTMLRenderer::beginTransparencyGroup(GfxState *state,
 }
 } // namespace pdf2htmlEX
 EOF
+  fi
 fi
 
-# placeholder tests if upstream omitted them
+# ---- CharCodeToUnicode.h shim (guards against header not found) ----
+# the compile line includes "-I ${PDF2_SRC}/src", so a shim here always wins
+if [ -d "$VENDOR_POP_HDR" ]; then
+  cat > "$PDF2_SRC/src/CharCodeToUnicode.h" <<EOF
+#pragma once
+// shim: allow <CharCodeToUnicode.h> to resolve regardless of Poppler packaging
+#include "../poppler/poppler/CharCodeToUnicode.h"
+EOF
+fi
+
+# dummy test input if project lacks it
 [ -f "$PDF2_SRC/test/test.py.in" ] || { mkdir -p "$PDF2_SRC/test"; printf '#!/usr/bin/env @PYTHON@\nprint("tests disabled")\n' > "$PDF2_SRC/test/test.py.in"; }
 
-# -------- configure & build --------
+# ---------- configure & build ----------
 cmake -S "$PDF2_SRC" -B "$PDF2_SRC/build" \
   -G "$CMAKE_GENERATOR" \
   -DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM" \
