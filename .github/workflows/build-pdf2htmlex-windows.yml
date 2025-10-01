@@ -1,14 +1,17 @@
-name: build-pdf2htmlEX-windows
+name: build-pdf2htmlex-windows-x64
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ main ]
-  pull_request: {}
+    tags:
+      - 'v*'
 
 jobs:
-  build:
+  build-windows-x64:
     runs-on: windows-latest
-
+    env:
+      # Ensure pkg-config can find MinGW64 packages
+      PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,44 +19,86 @@ jobs:
       - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: MINGW64 # switch to UCRT64 if you prefer UCRT runtime
           update: true
-          cache: true
           install: >-
-            base-devel
-            git
-            curl
-            wget
-            unzip
-            tar
-            patch
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-poppler
             mingw-w64-x86_64-cairo
-            mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-fontconfig
-            mingw-w64-x86_64-harfbuzz
-            mingw-w64-x86_64-libpng
-            mingw-w64-x86_64-libjpeg-turbo
-            mingw-w64-x86_64-openjpeg2
-            mingw-w64-x86_64-libtiff
-            mingw-w64-x86_64-lcms2
-            mingw-w64-x86_64-libxml2
-            mingw-w64-x86_64-glib2
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-curl
             mingw-w64-x86_64-fontforge
+            mingw-w64-x86_64-libspiro
+            mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-freetype
             mingw-w64-x86_64-ntldd
+            poppler-data
 
-      - name: Build all (MSYS2 bash)
+      - name: Configure (CMake + Ninja)
         shell: msys2 {0}
-        run: bash ./scripts/build-msys2.sh
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64 \
+            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/_install"
 
-      - name: Upload artifact (portable zip)
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          cmake --build build --config Release -j 2
+
+      - name: Install to staging
+        shell: msys2 {0}
+        run: |
+          cmake --install build --prefix "${GITHUB_WORKSPACE}/_install"
+
+      - name: Bundle runtime DLLs
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Try expected install location first, fall back to search
+          EXE="${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe"
+          if [ ! -f "$EXE" ]; then
+            EXE=$(find "${GITHUB_WORKSPACE}/_install" -type f -iname 'pdf2htmlEX*.exe' | head -n1)
+          fi
+          if [ -z "$EXE" ] || [ ! -f "$EXE" ]; then
+            echo "pdf2htmlEX.exe not found in _install; listing tree:";
+            find "${GITHUB_WORKSPACE}/_install" -maxdepth 3 -type f | sed 's|^|  |'
+            exit 1
+          fi
+          cp "$EXE" dist/
+          pushd dist >/dev/null
+          # Recursively copy dependent DLLs from mingw64\bin into dist
+          ntldd -R "$(basename "$EXE")" | awk '/mingw64/ {print $3}' | xargs -I{} cp -u {} .
+          # Include poppler-data runtime resources (cmaps, etc.)
+          mkdir -p share/poppler
+          if [ -d /usr/share/poppler ]; then
+            cp -r /usr/share/poppler/* share/poppler/ || true
+          fi
+          popd >/dev/null
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pdf2htmlEX-windows-portable
-          path: dist/pdf2htmlEX-windows-portable.zip
-          if-no-files-found: error
+          name: pdf2htmlex-windows-x64
+          path: dist
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**
+          generate_release_notes: true
+
+# Notes:
+# 1) This builds against MSYS2 MinGW64 shared libraries (Poppler, FontForge, Cairo).
+#    If upstream API changes cause build failures, consider pinning Poppler/FontForge
+#    versions or switching to the project-provided static build scripts (Linux-first)
+#    adapted for MSYS2. You can also switch to UCRT64 by setting msystem: UCRT64 and
+#    replacing package prefixes with mingw-w64-ucrt-x86_64-*. 
+# 2) The produced exe remains GPLv3-licensed as per pdf2htmlEX; ensure distribution
+#    complies with the license if you ship the binary.
