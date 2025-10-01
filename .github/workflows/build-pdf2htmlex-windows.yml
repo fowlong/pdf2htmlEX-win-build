@@ -1,4 +1,3 @@
-# .github/workflows/build-windows.yml
 name: Cross-compile pdf2htmlEX for Windows
 
 on:
@@ -13,55 +12,47 @@ jobs:
     - name: Checkout source
       uses: actions/checkout@v3
 
-    - name: Install dependencies
+    - name: Install MXE toolchain
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          mingw-w64 \
-          cmake \
-          ninja-build \
-          pkg-config \
-          autoconf \
-          automake \
-          libtool \
-          build-essential \
-          libfontforge-dev \
-          libjpeg-dev \
-          libpng-dev \
-          zlib1g-dev \
-          libfreetype6-dev \
-          libcairo2-dev \
-          libpoppler-private-dev
+        sudo apt-get install -y autoconf automake bison flex g++ gperf \
+          libtool libtool-bin make gettext texinfo unzip wget \
+          p7zip-full python3 cmake ninja-build
 
-    - name: Set up environment variables
-      run: |
-        echo 'CC=x86_64-w64-mingw32-gcc' >> $GITHUB_ENV
-        echo 'CXX=x86_64-w64-mingw32-g++' >> $GITHUB_ENV
-        echo 'RC=x86_64-w64-mingw32-windres' >> $GITHUB_ENV
-        echo 'AR=x86_64-w64-mingw32-ar' >> $GITHUB_ENV
-        echo 'RANLIB=x86_64-w64-mingw32-ranlib' >> $GITHUB_ENV
-        echo 'STRIP=x86_64-w64-mingw32-strip' >> $GITHUB_ENV
-        echo 'PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig' >> $GITHUB_ENV
-        echo 'CFLAGS=-O2' >> $GITHUB_ENV
+        git clone https://github.com/mxe/mxe.git
+        cd mxe
+        make MXE_TARGETS='x86_64-w64-mingw32.static' \
+             qtbase cairo freetype fontconfig jpeg libpng zlib \
+             glib poppler fontforge \
+             -j$(nproc)
 
-    - name: Configure and Build
+    - name: Build pdf2htmlEX
       run: |
-        mkdir build
-        cd build
-        cmake .. \
+        export PATH=$PWD/mxe/usr/bin:$PATH
+        export CROSS="x86_64-w64-mingw32.static"
+
+        git clone https://github.com/coolwanglu/pdf2htmlEX.git
+        cd pdf2htmlEX
+
+        # Use a known stable branch or commit
+        git checkout tags/0.14.6
+
+        # Configure the build
+        cmake . \
           -G Ninja \
-          -DCMAKE_SYSTEM_NAME=Windows \
-          -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-          -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-          -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
-          -DCMAKE_FIND_ROOT_PATH=/usr/x86_64-w64-mingw32 \
-          -DCMAKE_INSTALL_PREFIX=/usr/x86_64-w64-mingw32 \
-          -DCMAKE_BUILD_TYPE=Release
-        ninja
+          -DCMAKE_TOOLCHAIN_FILE=../mxe/usr/$CROSS/share/cmake/mxe-conf.cmake \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=install
+
+        # Build the executable
+        ninja pdf2htmlEX
+
+        # Copy output
+        mkdir -p output
+        cp src/pdf2htmlEX.exe output/
 
     - name: Upload Windows binary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@4
       with:
         name: pdf2htmlEX-windows
-        path: |
-          build/pdf2htmlEX.exe
+        path: pdf2htmlEX/output/pdf2htmlEX.exe
