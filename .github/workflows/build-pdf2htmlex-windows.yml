@@ -3,8 +3,7 @@ name: build-pdf2htmlex-windows-x64
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    tags: [ 'v*' ]
 
 jobs:
   build-windows-x64:
@@ -21,14 +20,13 @@ jobs:
         with:
           repository: pdf2htmlEX/pdf2htmlEX
           path: upstream
-          # For reproducible builds, pin a known-good tag/commit:
-          # ref: v0.18.8.rc2
+          # For reproducible builds you can pin:
+          # ref: v0.18.8.rc1
 
-      # Verify paths using Git-Bash (no MSYS2 dependency yet)
-      - name: Verify source layout
+      - name: Verify source layout (Git-Bash)
         shell: bash
         run: |
-          test -f upstream/pdf2htmlEX/CMakeLists.txt || { echo 'CMakeLists not found at upstream/pdf2htmlEX'; ls -la upstream; ls -la upstream/pdf2htmlEX || true; exit 1; }
+          test -f upstream/pdf2htmlEX/CMakeLists.txt || { echo 'Missing CMakeLists in upstream/pdf2htmlEX'; ls -la upstream; ls -la upstream/pdf2htmlEX || true; exit 1; }
 
       - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
@@ -58,15 +56,26 @@ jobs:
           gcc --version
           pkg-config --modversion poppler || true
           pkg-config --modversion poppler-cpp || true
-          pkg-config --exists fontforge || pkg-config --exists libfontforge || echo 'fontforge .pc not found (build may fail)'
+
+      # Robust fix for your current configure error
+      - name: Patch CMake policy floor (CMake >=3.5)
+        shell: bash
+        run: |
+          set -e
+          sed -i 's/^[[:space:]]*cmake_minimum_required(.*)$/cmake_minimum_required(VERSION 3.5)/I' upstream/pdf2htmlEX/CMakeLists.txt || true
+          grep -qi '^[[:space:]]*cmake_minimum_required' upstream/pdf2htmlEX/CMakeLists.txt || sed -i '1i cmake_minimum_required(VERSION 3.5)' upstream/pdf2htmlEX/CMakeLists.txt
 
       - name: Configure (CMake + Ninja)
         shell: msys2 {0}
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"   # modern CMake compatibility shim
         run: |
           cmake -S upstream/pdf2htmlEX -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/ucrt64 \
-            -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/_install"
+            -DFONTFORGE_INCLUDE_DIR=/ucrt64/include/fontforge \
+            -DFONTFORGE_LIBRARY=/ucrt64/lib/libfontforge.dll.a \
+            -Wno-dev
 
       - name: Build
         shell: msys2 {0}
@@ -78,8 +87,7 @@ jobs:
 
       - name: Smoke-test CLI
         shell: msys2 {0}
-        run: |
-          "${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe" --version || true
+        run: '"${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe" --version || true'
 
       - name: Bundle exe + runtime DLLs + resources
         shell: msys2 {0}
@@ -93,17 +101,14 @@ jobs:
           cp "$EXE" dist/bin/
 
           pushd dist/bin >/dev/null
-          # Copy dependent DLLs (UCRT64 or MINGW64)
           ntldd -R "$(basename "$EXE")" | awk '/\/(ucrt64|mingw64)\// {print $3}' | xargs -I{} cp -u {} .
           popd >/dev/null
 
-          # Copy installed pdf2htmlEX resources (css/js)
           if [ -d "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX" ]; then
             mkdir -p dist/share/pdf2htmlEX
             cp -r "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX/"* dist/share/pdf2htmlEX/
           fi
 
-          # Copy Poppler data (cmaps, etc.)
           for d in /ucrt64/share/poppler /mingw64/share/poppler; do
             if [ -d "$d" ]; then
               mkdir -p dist/share/poppler
@@ -125,12 +130,3 @@ jobs:
         with:
           files: pdf2htmlEX-windows-x64.zip
           generate_release_notes: true
-
-# Why this should build reliably
-# - Fixes your error: do not use the `msys2` shell until after the MSYS2 setup step. The path
-#   check now uses `bash`, and CMake points to the correct source root `upstream/`.
-# - Meets functional requirements for a Windows build: Poppler (+poppler-data), FontForge (+libspiro),
-#   Cairo, Freetype, Fontconfig, libpng, libjpeg-turbo, libxml2, toolchain, CMake, Ninja, pkg-config.
-# - Uses MSYS2 UCRT64 to match current MSYS2 guidance and improves ABI compatibility.
-# - Bundles all needed DLLs with `ntldd -R` and includes Poppler data + pdf2htmlEX assets for a runnable ZIP.
-# - Switch to MINGW64 by changing `msystem` and replacing package prefixes if needed.
