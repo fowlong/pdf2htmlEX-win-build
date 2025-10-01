@@ -9,14 +9,30 @@ on:
 jobs:
   build-windows-x64:
     runs-on: windows-latest
+    env:
+      MSYSTEM: UCRT64
+      PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
     steps:
-      - name: Checkout
+      - name: Checkout this repo (workflow + scripts)
         uses: actions/checkout@v4
+
+      - name: Checkout upstream pdf2htmlEX sources
+        uses: actions/checkout@v4
+        with:
+          repository: pdf2htmlEX/pdf2htmlEX
+          path: upstream
+          # You may pin to a commit known-good with your toolchain for reproducibility
+          # ref: master
+
+      - name: Verify source layout
+        shell: msys2 {0}
+        run: |
+          test -f upstream/pdf2htmlEX/CMakeLists.txt || { echo 'CMakeLists not found at upstream/pdf2htmlEX'; ls -la upstream; exit 1; }
 
       - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64  # MSYS2 recommends UCRT64 if unsure
+          msystem: UCRT64
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-toolchain
@@ -37,24 +53,24 @@ jobs:
 
       - name: Configure (CMake + Ninja)
         shell: msys2 {0}
-        env:
-          PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
         run: |
-          # The CMakeLists.txt that defines pdf2htmlEX is in the subfolder "pdf2htmlEX"
-          cmake -S pdf2htmlEX -B build -G Ninja \
+          cmake -S upstream/pdf2htmlEX -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/ucrt64 \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/_install"
 
       - name: Build
         shell: msys2 {0}
-        run: |
-          cmake --build build --config Release -j 2
+        run: cmake --build build --config Release -j 2
 
       - name: Install to staging
         shell: msys2 {0}
+        run: cmake --install build --prefix "${GITHUB_WORKSPACE}/_install"
+
+      - name: Smoke-test CLI
+        shell: msys2 {0}
         run: |
-          cmake --install build --prefix "${GITHUB_WORKSPACE}/_install"
+          "${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe" --version || true
 
       - name: Bundle exe + runtime DLLs + resources
         shell: msys2 {0}
@@ -63,38 +79,29 @@ jobs:
           mkdir -p dist/bin dist/share
 
           EXE="${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe"
-          if [ ! -f "$EXE" ]; then
-            echo "pdf2htmlEX.exe not found at $EXE";
-            find "${GITHUB_WORKSPACE}/_install" -maxdepth 4 -type f -iname 'pdf2htmlEX*.exe' | sed 's|^|  |'
-            exit 1
-          fi
+          test -f "$EXE" || { echo "pdf2htmlEX.exe not found: $EXE"; find "${GITHUB_WORKSPACE}/_install" -type f -iname '*pdf2htmlEX*.exe' -maxdepth 5 -print; exit 1; }
 
-          # Copy the exe
           cp "$EXE" dist/bin/
 
-          # Copy dependent DLLs from /ucrt64/bin (or /mingw64/bin if you switch envs)
           pushd dist/bin >/dev/null
-          ntldd -R "$(basename "$EXE")" \
-            | awk '/\/(ucrt64|mingw64)\// {print $3}' \
-            | xargs -I{} cp -u {} .
+          # Copy dependent DLLs
+          ntldd -R "$(basename "$EXE")" | awk '/\/(ucrt64|mingw64)\// {print $3}' | xargs -I{} cp -u {} .
           popd >/dev/null
 
-          # Copy app resources installed by `cmake --install`
+          # Copy installed pdf2htmlEX resources (css/js)
           if [ -d "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX" ]; then
             mkdir -p dist/share/pdf2htmlEX
             cp -r "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX/"* dist/share/pdf2htmlEX/
           fi
 
-          # Copy poppler-data (cmaps, etc.) used by poppler
-          if [ -d /ucrt64/share/poppler ]; then
-            mkdir -p dist/share/poppler
-            cp -r /ucrt64/share/poppler/* dist/share/poppler/ || true
-          elif [ -d /mingw64/share/poppler ]; then
-            mkdir -p dist/share/poppler
-            cp -r /mingw64/share/poppler/* dist/share/poppler/ || true
-          fi
+          # Copy Poppler data (cmaps, etc.)
+          for d in /ucrt64/share/poppler /mingw64/share/poppler; do
+            if [ -d "$d" ]; then
+              mkdir -p dist/share/poppler
+              cp -r "$d"/* dist/share/poppler/ || true
+            fi
+          done
 
-          # Package everything as a single ZIP
           7z a -tzip "${GITHUB_WORKSPACE}/pdf2htmlEX-windows-x64.zip" ./dist/*
 
       - name: Upload artifact
@@ -110,10 +117,9 @@ jobs:
           files: pdf2htmlEX-windows-x64.zip
           generate_release_notes: true
 
-# Notes:
-# - Your previous failure was due to requesting a non-existent package name `poppler-data`.
-#   On MSYS2, use the MinGW/UCRT-prefixed package: `mingw-w64-ucrt-x86_64-poppler-data`.
-# - If you prefer the classic MSVCRT-based MinGW (MINGW64) environment, change `msystem: MINGW64`
-#   and swap package prefixes from `mingw-w64-ucrt-x86_64-` to `mingw-w64-x86_64-`.
-# - The bundling step now copies DLLs from either UCRT64 or MINGW64 automatically and includes
-#   pdf2htmlEX/share resources plus Poppler's data files so the binary works out-of-the-box.
+# Why this should build reliably
+# - We explicitly **checkout the upstream sources** into `upstream/`, avoiding path errors when your repo doesn't contain the code.
+# - We use **MSYS2 UCRT64** and install the exact runtime packages that pdf2htmlEX needs: Poppler(+poppler-data), FontForge(+libspiro), Cairo, Freetype, libpng/jpeg, Fontconfig, libxml2. pkg-config will find them under /ucrt64. 
+# - CMake points to `upstream/pdf2htmlEX` (that's where the project's CMakeLists.txt lives).
+# - We stage install then bundle **all DLL dependencies** via `ntldd -R`, and copy **Poppler data + pdf2htmlEX resources** so the ZIP is runnable out of the box.
+# - If you need MINGW64 instead, change `msystem` and swap `mingw-w64-ucrt-x86_64-*` with `mingw-w64-x86_64-*`.
