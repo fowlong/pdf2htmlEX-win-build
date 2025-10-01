@@ -21,13 +21,14 @@ jobs:
         with:
           repository: pdf2htmlEX/pdf2htmlEX
           path: upstream
-          # You may pin to a commit known-good with your toolchain for reproducibility
-          # ref: master
+          # For reproducible builds, pin a known-good tag/commit:
+          # ref: v0.18.8.rc2
 
+      # Verify paths using Git-Bash (no MSYS2 dependency yet)
       - name: Verify source layout
-        shell: msys2 {0}
+        shell: bash
         run: |
-          test -f upstream/pdf2htmlEX/CMakeLists.txt || { echo 'CMakeLists not found at upstream/pdf2htmlEX'; ls -la upstream; exit 1; }
+          test -f upstream/CMakeLists.txt || { echo 'CMakeLists not found at upstream/'; ls -la upstream; exit 1; }
 
       - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
@@ -51,10 +52,17 @@ jobs:
             mingw-w64-ucrt-x86_64-libxml2
             mingw-w64-ucrt-x86_64-ntldd
 
+      - name: Toolchain sanity check
+        shell: msys2 {0}
+        run: |
+          gcc --version
+          pkg-config --modversion poppler || true
+          pkg-config --list-all | grep -E 'poppler|cairo|fontforge|libfontforge' || true
+
       - name: Configure (CMake + Ninja)
         shell: msys2 {0}
         run: |
-          cmake -S upstream/pdf2htmlEX -B build -G Ninja \
+          cmake -S upstream -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/ucrt64 \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/_install"
@@ -84,7 +92,7 @@ jobs:
           cp "$EXE" dist/bin/
 
           pushd dist/bin >/dev/null
-          # Copy dependent DLLs
+          # Copy dependent DLLs (UCRT64 or MINGW64)
           ntldd -R "$(basename "$EXE")" | awk '/\/(ucrt64|mingw64)\// {print $3}' | xargs -I{} cp -u {} .
           popd >/dev/null
 
@@ -118,8 +126,10 @@ jobs:
           generate_release_notes: true
 
 # Why this should build reliably
-# - We explicitly **checkout the upstream sources** into `upstream/`, avoiding path errors when your repo doesn't contain the code.
-# - We use **MSYS2 UCRT64** and install the exact runtime packages that pdf2htmlEX needs: Poppler(+poppler-data), FontForge(+libspiro), Cairo, Freetype, libpng/jpeg, Fontconfig, libxml2. pkg-config will find them under /ucrt64. 
-# - CMake points to `upstream/pdf2htmlEX` (that's where the project's CMakeLists.txt lives).
-# - We stage install then bundle **all DLL dependencies** via `ntldd -R`, and copy **Poppler data + pdf2htmlEX resources** so the ZIP is runnable out of the box.
-# - If you need MINGW64 instead, change `msystem` and swap `mingw-w64-ucrt-x86_64-*` with `mingw-w64-x86_64-*`.
+# - Fixes your error: do not use the `msys2` shell until after the MSYS2 setup step. The path
+#   check now uses `bash`, and CMake points to the correct source root `upstream/`.
+# - Meets functional requirements for a Windows build: Poppler (+poppler-data), FontForge (+libspiro),
+#   Cairo, Freetype, Fontconfig, libpng, libjpeg-turbo, libxml2, toolchain, CMake, Ninja, pkg-config.
+# - Uses MSYS2 UCRT64 to match current MSYS2 guidance and improves ABI compatibility.
+# - Bundles all needed DLLs with `ntldd -R` and includes Poppler data + pdf2htmlEX assets for a runnable ZIP.
+# - Switch to MINGW64 by changing `msystem` and replacing package prefixes if needed.
