@@ -9,39 +9,41 @@ on:
 jobs:
   build-windows-x64:
     runs-on: windows-latest
-    env:
-      # Ensure pkg-config can find MinGW64 packages
-      PKG_CONFIG_PATH: /mingw64/lib/pkgconfig
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up MSYS2 (MINGW64)
+      - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64 # switch to UCRT64 if you prefer UCRT runtime
+          msystem: UCRT64  # MSYS2 recommends UCRT64 if unsure
           update: true
           install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-pkg-config
-            mingw-w64-x86_64-poppler
-            mingw-w64-x86_64-cairo
-            mingw-w64-x86_64-fontforge
-            mingw-w64-x86_64-libspiro
-            mingw-w64-x86_64-libjpeg-turbo
-            mingw-w64-x86_64-libpng
-            mingw-w64-x86_64-freetype
-            mingw-w64-x86_64-ntldd
-            poppler-data
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-poppler
+            mingw-w64-ucrt-x86_64-poppler-data
+            mingw-w64-ucrt-x86_64-cairo
+            mingw-w64-ucrt-x86_64-fontforge
+            mingw-w64-ucrt-x86_64-libspiro
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-fontconfig
+            mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-ntldd
 
       - name: Configure (CMake + Ninja)
         shell: msys2 {0}
+        env:
+          PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
         run: |
-          cmake -S . -B build -G Ninja \
+          # The CMakeLists.txt that defines pdf2htmlEX is in the subfolder "pdf2htmlEX"
+          cmake -S pdf2htmlEX -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64 \
+            -DCMAKE_PREFIX_PATH=/ucrt64 \
             -DCMAKE_INSTALL_PREFIX="${GITHUB_WORKSPACE}/_install"
 
       - name: Build
@@ -54,51 +56,64 @@ jobs:
         run: |
           cmake --install build --prefix "${GITHUB_WORKSPACE}/_install"
 
-      - name: Bundle runtime DLLs
+      - name: Bundle exe + runtime DLLs + resources
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          # Try expected install location first, fall back to search
+          mkdir -p dist/bin dist/share
+
           EXE="${GITHUB_WORKSPACE}/_install/bin/pdf2htmlEX.exe"
           if [ ! -f "$EXE" ]; then
-            EXE=$(find "${GITHUB_WORKSPACE}/_install" -type f -iname 'pdf2htmlEX*.exe' | head -n1)
-          fi
-          if [ -z "$EXE" ] || [ ! -f "$EXE" ]; then
-            echo "pdf2htmlEX.exe not found in _install; listing tree:";
-            find "${GITHUB_WORKSPACE}/_install" -maxdepth 3 -type f | sed 's|^|  |'
+            echo "pdf2htmlEX.exe not found at $EXE";
+            find "${GITHUB_WORKSPACE}/_install" -maxdepth 4 -type f -iname 'pdf2htmlEX*.exe' | sed 's|^|  |'
             exit 1
           fi
-          cp "$EXE" dist/
-          pushd dist >/dev/null
-          # Recursively copy dependent DLLs from mingw64\bin into dist
-          ntldd -R "$(basename "$EXE")" | awk '/mingw64/ {print $3}' | xargs -I{} cp -u {} .
-          # Include poppler-data runtime resources (cmaps, etc.)
-          mkdir -p share/poppler
-          if [ -d /usr/share/poppler ]; then
-            cp -r /usr/share/poppler/* share/poppler/ || true
-          fi
+
+          # Copy the exe
+          cp "$EXE" dist/bin/
+
+          # Copy dependent DLLs from /ucrt64/bin (or /mingw64/bin if you switch envs)
+          pushd dist/bin >/dev/null
+          ntldd -R "$(basename "$EXE")" \
+            | awk '/\/(ucrt64|mingw64)\// {print $3}' \
+            | xargs -I{} cp -u {} .
           popd >/dev/null
+
+          # Copy app resources installed by `cmake --install`
+          if [ -d "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX" ]; then
+            mkdir -p dist/share/pdf2htmlEX
+            cp -r "${GITHUB_WORKSPACE}/_install/share/pdf2htmlEX/"* dist/share/pdf2htmlEX/
+          fi
+
+          # Copy poppler-data (cmaps, etc.) used by poppler
+          if [ -d /ucrt64/share/poppler ]; then
+            mkdir -p dist/share/poppler
+            cp -r /ucrt64/share/poppler/* dist/share/poppler/ || true
+          elif [ -d /mingw64/share/poppler ]; then
+            mkdir -p dist/share/poppler
+            cp -r /mingw64/share/poppler/* dist/share/poppler/ || true
+          fi
+
+          # Package everything as a single ZIP
+          7z a -tzip "${GITHUB_WORKSPACE}/pdf2htmlEX-windows-x64.zip" ./dist/*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pdf2htmlex-windows-x64
-          path: dist
+          name: pdf2htmlEX-windows-x64
+          path: pdf2htmlEX-windows-x64.zip
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/**
+          files: pdf2htmlEX-windows-x64.zip
           generate_release_notes: true
 
 # Notes:
-# 1) This builds against MSYS2 MinGW64 shared libraries (Poppler, FontForge, Cairo).
-#    If upstream API changes cause build failures, consider pinning Poppler/FontForge
-#    versions or switching to the project-provided static build scripts (Linux-first)
-#    adapted for MSYS2. You can also switch to UCRT64 by setting msystem: UCRT64 and
-#    replacing package prefixes with mingw-w64-ucrt-x86_64-*. 
-# 2) The produced exe remains GPLv3-licensed as per pdf2htmlEX; ensure distribution
-#    complies with the license if you ship the binary.
+# - Your previous failure was due to requesting a non-existent package name `poppler-data`.
+#   On MSYS2, use the MinGW/UCRT-prefixed package: `mingw-w64-ucrt-x86_64-poppler-data`.
+# - If you prefer the classic MSVCRT-based MinGW (MINGW64) environment, change `msystem: MINGW64`
+#   and swap package prefixes from `mingw-w64-ucrt-x86_64-` to `mingw-w64-x86_64-`.
+# - The bundling step now copies DLLs from either UCRT64 or MINGW64 automatically and includes
+#   pdf2htmlEX/share resources plus Poppler's data files so the binary works out-of-the-box.
