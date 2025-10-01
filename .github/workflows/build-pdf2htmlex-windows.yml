@@ -12,13 +12,15 @@ jobs:
     - name: Checkout source
       uses: actions/checkout@v3
 
-    - name: Install MXE toolchain
+    - name: Install system packages
       run: |
         sudo apt-get update
         sudo apt-get install -y autoconf automake bison flex g++ gperf \
           libtool libtool-bin make gettext texinfo unzip wget \
           p7zip-full python3 cmake ninja-build
 
+    - name: Clone and build MXE (cross-compiler)
+      run: |
         git clone https://github.com/mxe/mxe.git
         cd mxe
         make MXE_TARGETS='x86_64-w64-mingw32.static' \
@@ -31,28 +33,27 @@ jobs:
         export PATH=$PWD/mxe/usr/bin:$PATH
         export CROSS="x86_64-w64-mingw32.static"
 
+        # Clone and checkout a compatible version
         git clone https://github.com/coolwanglu/pdf2htmlEX.git
         cd pdf2htmlEX
-
-        # Use a known stable branch or commit
         git checkout tags/0.14.6
 
-        # Configure the build
-        cmake . \
-          -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE=../mxe/usr/$CROSS/share/cmake/mxe-conf.cmake \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_INSTALL_PREFIX=install
+        mkdir build
+        cd build
 
-        # Build the executable
+        cmake .. \
+          -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/mxe/usr/$CROSS/share/cmake/mxe-conf.cmake \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=../install
+
         ninja pdf2htmlEX
 
-        # Copy output
         mkdir -p output
         cp src/pdf2htmlEX.exe output/
 
     - name: Upload Windows binary
-      uses: actions/upload-artifact@4
+      uses: actions/upload-artifact@v3
       with:
         name: pdf2htmlEX-windows
-        path: pdf2htmlEX/output/pdf2htmlEX.exe
+        path: pdf2htmlEX/build/output/pdf2htmlEX.exe
